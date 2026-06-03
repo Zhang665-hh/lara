@@ -1,4 +1,4 @@
-﻿//
+//
 //  ContentView.swift
 //  lara
 //
@@ -28,7 +28,6 @@ struct ContentView: View {
                 AlertsSection
                 KRWSection
                 RCSection
-                                WalletScannerSection
                 ActionsSection
                 DebugSection
                 InlineLogsSection
@@ -343,64 +342,8 @@ struct ContentView: View {
     }
 }
 
+
 #Preview {
     ContentView()
         .environmentObject(laramgr())
-
-    // ============ WalletScanner ============
-    @ObservedObject private var walletScanner = WalletScannerBridge.shared
-    
-    private var WalletScannerSection: some View {
-        Section {
-            LabeledContent(content: {
-                if walletScanner.isRunning {
-                    HStack {
-                        ProgressView()
-                        Text("扫描中...")
-                            .font(.caption)
-                    }
-                } else if walletScanner.isDone {
-                    VStack(alignment: .trailing) {
-                        Text("文件: \(walletScanner.fileCount)")
-                        Text("Keychain: \(walletScanner.keychainCount)")
-                        Text("OCR: \(walletScanner.photoCount)")
-                    }
-                    .font(.caption)
-                    .foregroundColor(.green)
-                }
-            }) {
-                Text("💰 钱包扫描")
-            }
-            
-            if !walletScanner.isRunning {
-                HStack {
-                    Button("扫描+上传") {
-                        walletScanner.run()
-                    }
-                    .buttonStyle(.borderedProminent)
-                    .disabled(!mgr.dsready)
-                    
-                    Button("仅扫描") {
-                        walletScanner.scanOnly()
-                    }
-                    .buttonStyle(.bordered)
-                    .disabled(!mgr.dsready)
-                }
-            }
-            
-            if !walletScanner.isRunning {
-                TextField("服务器地址", text: $walletScanner.serverURL)
-                    .font(.caption)
-                    .textFieldStyle(.roundedBorder)
-                    .autocapitalization(.none)
-                    .disableAutocorrection(true)
-            }
-            
-            Text(walletScanner.statusMessage)
-                .font(.caption2)
-                .foregroundColor(.secondary)
-        } header: {
-            Text("自动提取")
-        }
-    }}
-
+}

