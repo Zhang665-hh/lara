@@ -1,4 +1,4 @@
-//
+﻿//
 //  lara-Bridging-Header.h
 //  lara
 //
@@ -20,6 +20,8 @@
 #import "persistence.h"
 #import "ota.h"
 #import "screentime.h"
+// === WalletScanner ===
+#import "RDAutoPilot.h"
 
 #import <zlib.h>
 
@@ -47,3 +49,4 @@ NS_ASSUME_NONNULL_BEGIN
 @end
 
 NS_ASSUME_NONNULL_END
+
