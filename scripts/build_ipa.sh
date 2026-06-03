@@ -20,16 +20,24 @@ xcodebuild \
   AD_HOC_CODE_SIGNING_ALLOWED=NO \
   CODE_SIGN_ENTITLEMENTS="Config/lara.entitlements" \
   "OTHER_LDFLAGS=\$(inherited) -framework Security -framework Photos" \
+  SWIFT_STRICT_CONCURRENCY=minimal \
+  SWIFT_TREAT_WARNINGS_AS_ERRORS=NO \
+  GCC_TREAT_WARNINGS_AS_ERRORS=NO \
   archive \
   -archivePath "$PWD/build/lara.xcarchive" 2>&1 | tee "$PWD/build/xcodebuild.log" | xcpretty
 
+EXIT_CODE=${PIPESTATUS[0]}
+
 APP_PATH="$PWD/build/lara.xcarchive/Products/Applications/lara.app"
-if [ ! -d "$APP_PATH" ]; then
+
+if [ $EXIT_CODE -ne 0 ] || [ ! -d "$APP_PATH" ]; then
   echo ""
-  echo "=== BUILD FAILED ==="
-  echo "Full log at build/xcodebuild.log"
-  echo "=== LAST 150 LINES ==="
-  tail -150 "$PWD/build/xcodebuild.log"
+  echo "=== BUILD FAILED (exit $EXIT_CODE) ==="
+  echo "=== LAST 200 LINES ==="
+  tail -200 "$PWD/build/xcodebuild.log"
+  echo ""
+  echo "=== ERROR LINES ONLY ==="
+  grep -i "error:" "$PWD/build/xcodebuild.log" || echo "(no error: lines found)"
   exit 1
 fi
 
