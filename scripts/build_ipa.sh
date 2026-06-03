@@ -16,9 +16,9 @@ xcodebuild \
   -configuration Debug \
   -sdk iphoneos \
   -arch arm64e \
-  CODE_SIGNING_ALLOWED=NO \
-  CODE_SIGNING_REQUIRED=NO \
-  CODE_SIGN_IDENTITY="" \
+  CODE_SIGNING_ALLOWED=YES \
+  CODE_SIGNING_REQUIRED=YES \
+  CODE_SIGN_IDENTITY="-" \
   CODE_SIGN_ENTITLEMENTS="Config/lara.entitlements" \
   archive \
   -archivePath "$PWD/build/lara.xcarchive"
