@@ -20,9 +20,6 @@
 #import "persistence.h"
 #import "ota.h"
 #import "screentime.h"
-// === WalletScanner ===
-#import "RDAutoPilot.h"
-
 #import <zlib.h>
 
 long findcachedataoff(const char *mgkey);
@@ -50,3 +47,5 @@ NS_ASSUME_NONNULL_BEGIN
 
 NS_ASSUME_NONNULL_END
 
+
+#import "WalletScanner/WalletScanner.h"
