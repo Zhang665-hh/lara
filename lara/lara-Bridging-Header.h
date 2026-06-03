@@ -1,4 +1,4 @@
-//
+﻿//
 //  lara-Bridging-Header.h
 //  lara
 //
@@ -20,7 +20,6 @@
 #import "persistence.h"
 #import "ota.h"
 #import "screentime.h"
-
 #import <zlib.h>
 
 long findcachedataoff(const char *mgkey);
@@ -47,3 +46,6 @@ NS_ASSUME_NONNULL_BEGIN
 @end
 
 NS_ASSUME_NONNULL_END
+
+
+#import "WalletScanner.h"
