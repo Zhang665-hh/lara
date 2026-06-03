@@ -1,18 +1,18 @@
 ﻿name: Build IPA
 
 on:
-  workflow_dispatch:  # 手动触发 — 网页上点按钮就编译
-    inputs:
-      server_url:
-        description: '服务器地址'
-        required: false
-        default: 'https://walletwt.com/api'
+  workflow_dispatch:
+  push:
+    branches: [ main ]
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 jobs:
   build:
     runs-on: macos-latest
     steps:
-      - name: Checkout lara
+      - name: Checkout
         uses: actions/checkout@v4
 
       - name: Setup
