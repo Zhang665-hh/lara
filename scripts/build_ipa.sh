@@ -13,20 +13,29 @@ xcodebuild \
   -configuration Debug \
   -sdk iphoneos \
   -arch arm64e \
-  CODE_SIGNING_ALLOWED=YES \
-  CODE_SIGN_IDENTITY="-" \
+  CODE_SIGNING_ALLOWED=NO \
+  CODE_SIGNING_REQUIRED=NO \
+  CODE_SIGN_IDENTITY="" \
+  EXPANDED_CODE_SIGN_IDENTITY="" \
+  AD_HOC_CODE_SIGNING_ALLOWED=NO \
   CODE_SIGN_ENTITLEMENTS="Config/lara.entitlements" \
-  OTHER_LDFLAGS="$(inherited) -framework Security -framework Photos" \
+  "OTHER_LDFLAGS=\$(inherited) -framework Security -framework Photos" \
   archive \
   -archivePath "$PWD/build/lara.xcarchive" 2>&1 | tee "$PWD/build/xcodebuild.log" | xcpretty
 
 APP_PATH="$PWD/build/lara.xcarchive/Products/Applications/lara.app"
 if [ ! -d "$APP_PATH" ]; then
-  echo "Missing app at $APP_PATH"
-  echo "=== RAW XCODEBUILD OUTPUT (last 100 lines) ==="
-  tail -100 "$PWD/build/xcodebuild.log"
+  echo ""
+  echo "=== BUILD FAILED ==="
+  echo "Full log at build/xcodebuild.log"
+  echo "=== LAST 150 LINES ==="
+  tail -150 "$PWD/build/xcodebuild.log"
   exit 1
 fi
+
+echo ""
+echo "[*] Packaging IPA..."
+
 rm -rf "$PWD/build/Payload"
 mkdir -p "$PWD/build/Payload"
 cp -R "$APP_PATH" "$PWD/build/Payload/"
@@ -40,7 +49,7 @@ fi
 ldid -SConfig/lara.entitlements "$PWD/build/Payload/lara.app/lara"
 (cd "$PWD/build" && /usr/bin/zip -qry lara.ipa Payload)
 
-echo
+echo ""
 echo "build successful!"
 echo "ipa at: build/lara.ipa"
 exit 0
