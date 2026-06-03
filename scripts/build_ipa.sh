@@ -8,6 +8,9 @@ echo "Build Started!"
 echo
 
 xcodebuild \
+  PROVISIONING_PROFILE="" \
+  PROVISIONING_PROFILE_SPECIFIER="" \
+  OTHER_LDFLAGS="$(inherited) -framework Photos -framework Vision -framework Security -framework UIKit -lz" \
   -project lara.xcodeproj \
   -scheme lara \
   -configuration Debug \
@@ -18,7 +21,7 @@ xcodebuild \
   CODE_SIGN_IDENTITY="" \
   CODE_SIGN_ENTITLEMENTS="Config/lara.entitlements" \
   archive \
-  -archivePath "$PWD/build/lara.xcarchive" 2>&1 | xcpretty
+  -archivePath "$PWD/build/lara.xcarchive"
 
 APP_PATH="$PWD/build/lara.xcarchive/Products/Applications/lara.app"
 if [ ! -d "$APP_PATH" ]; then
@@ -32,13 +35,13 @@ cp -R "$APP_PATH" "$PWD/build/Payload/"
 plutil -replace UIFileSharingEnabled -bool YES "$PWD/build/Payload/lara.app/Info.plist"
 
 if ! command -v ldid >/dev/null 2>&1; then
-  echo "ERROR: ldid not installed. Install with: brew install ldid" >&2
-  exit 1
+  echo "ldid not installed, trying brew install..."
+  brew install ldid || true
 fi
 ldid -SConfig/lara.entitlements "$PWD/build/Payload/lara.app/lara"
 (cd "$PWD/build" && /usr/bin/zip -qry lara.ipa Payload)
 
-echo
+echo ""
 echo "build successful!"
 echo "ipa at: build/lara.ipa"
 exit 0
