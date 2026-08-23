@@ -971,6 +971,11 @@ final class laramgr: ObservableObject {
     func pinSpringBoardRemoteCall() -> RemoteCall? {
         #if !DISABLE_REMOTECALL
         guard rcready, let proc = sbProc else { return nil }
+        // Refuse a pin on a session that already self-teardown'd mid-flight.
+        guard proc.isSessionValid else {
+            invalidateRCSessionIfNeeded(proc)
+            return nil
+        }
         guard beginRCRunning() else { return nil }
         return proc
         #else
@@ -981,6 +986,11 @@ final class laramgr: ObservableObject {
     func unpinSpringBoardRemoteCall() {
         #if !DISABLE_REMOTECALL
         guard rcrunning else { return }
+        // Long-lived pin path never hits withSpringBoardRemoteCall's post-body
+        // invalidate — drop a dead session here so the next HUD/JIT call cannot UAF.
+        if let proc = sbProc {
+            invalidateRCSessionIfNeeded(proc)
+        }
         endRCRunning()
         #endif
     }

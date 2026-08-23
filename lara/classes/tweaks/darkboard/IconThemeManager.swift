@@ -587,6 +587,10 @@ final class IconThemeManager: ObservableObject {
         var claimedPendingFixup = false
         // Apps successfully themed this pass — roll back on a later hard failure.
         var successfullyThemed: [LaraThemedApp] = []
+        // Apps successfully restored (clear-theme pass) — stop on mid-list restore failure
+        // so we do not leave half-restored / half-themed icons with a cleared cache.
+        var successfullyRestored: [LaraThemedApp] = []
+        var abortedRestorePass = false
 
         defer {
             DispatchQueue.main.async {
@@ -619,6 +623,7 @@ final class IconThemeManager: ObservableObject {
                         successfullyThemed.append(change.app)
                     } else {
                         try change.app.restorePNGIcons()
+                        successfullyRestored.append(change.app)
                     }
                 } catch {
                     errors.append(error.localizedDescription)
@@ -632,6 +637,11 @@ final class IconThemeManager: ObservableObject {
                         successfullyThemed.removeAll()
                         themedCount = 0
                         stopApply = true
+                    } else if !successfullyRestored.isEmpty {
+                        // Clear-theme pass: abort so later apps stay themed consistently
+                        // rather than half-restoring then clearing icon cache.
+                        abortedRestorePass = true
+                        stopApply = true
                     }
                 }
             }
@@ -640,11 +650,13 @@ final class IconThemeManager: ObservableObject {
 
         DispatchQueue.main.async {
             self.applyProgress = 1.0
-            self.applyMessage = "Clearing icon cache..."
+            self.applyMessage = abortedRestorePass ? "Restore aborted" : "Clearing icon cache..."
         }
-        // Only clear icon cache when we still have themed apps or a clean restore pass;
-        // after full rollback, clearing is still needed to drop partial cache.
-        clearIconCache()
+        // Do not clear icon cache after a mid-list restore abort — that would strand
+        // remaining themed apps behind a wiped cache while half the list is stock.
+        if !abortedRestorePass {
+            clearIconCache()
+        }
 
         if themedCount > 0 {
             UserDefaults.standard.set(true, forKey: pendingFixupKey)

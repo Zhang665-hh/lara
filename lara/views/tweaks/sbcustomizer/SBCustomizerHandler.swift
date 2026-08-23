@@ -123,21 +123,76 @@ class SpringboardColorManager {
         return 30
     }
     
+    /// Isolated staging dir for preview temps — avoid fixed top-level temp names that race across applies.
+    private static func stagingDirectoryURL(forType: SpringboardType) -> URL {
+        FileManager.default.temporaryDirectory
+            .appendingPathComponent("lara.sb.\(String(describing: forType))", isDirectory: true)
+    }
+
+    /// Wipe + recreate private temp staging for a new `createColor` pass.
+    private static func prepareStagingDirectory(forType: SpringboardType, asTemp: Bool) throws -> URL {
+        if !asTemp {
+            guard let bgDir = getBackgroundDirectory() else {
+                throw "Could not find the background files directory!"
+            }
+            return bgDir
+        }
+        let dir = stagingDirectoryURL(forType: forType)
+        try? FileManager.default.removeItem(at: dir)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        return dir
+    }
+
+    /// Resolve existing stage location for `applyColor` — must not delete staged files.
+    private static func resolveStagingDirectory(forType: SpringboardType, asTemp: Bool) throws -> URL {
+        if !asTemp {
+            guard let bgDir = getBackgroundDirectory() else {
+                throw "Could not find the background files directory!"
+            }
+            return bgDir
+        }
+        let dir = stagingDirectoryURL(forType: forType)
+        var isDir: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: dir.path, isDirectory: &isDir), isDir.boolValue else {
+            throw "Missing staging directory for \(forType) — createColor must run first"
+        }
+        return dir
+    }
+
     static func revertFiles(forType: SpringboardType) throws {
         guard let files = finalFiles[forType],
               let folder = fileFolders[forType],
               let ext = fileExt[forType] else {
             throw "File type doesn't exist in table???"
         }
+        // Stage all stock replacements + backups first; refuse partial Visible-revert.
+        var staged: [(target: String, data: Data, backup: Data)] = []
         for file in files {
             guard let url = Bundle.main.url(forResource: file, withExtension: ext) else {
                 throw "No file resource was found!"
             }
             let replacementFile = try Data(contentsOf: url)
-            let result = laramgr.shared.lara_overwritefile(target: "\(folder)\(file)\(ext)", data: replacementFile)
-            if !result.ok {
-                throw "failed to overwrite with replacement file!"
+            let target = "\(folder)\(file)\(ext)"
+            let backup = try Data(contentsOf: URL(fileURLWithPath: target))
+            guard !backup.isEmpty, !replacementFile.isEmpty else {
+                throw "refusing empty stock/target for \(file)\(ext)"
             }
+            staged.append((target, replacementFile, backup))
+        }
+        var applied: [(path: String, backup: Data)] = []
+        do {
+            for item in staged {
+                let result = laramgr.shared.lara_overwritefile(target: item.target, data: item.data)
+                if !result.ok {
+                    throw "failed to overwrite with replacement file: \(item.target)"
+                }
+                applied.append((item.target, item.backup))
+            }
+        } catch {
+            for item in applied.reversed() {
+                _ = laramgr.shared.lara_overwritefile(target: item.path, data: item.backup)
+            }
+            throw error
         }
     }
     
@@ -210,11 +265,8 @@ class SpringboardColorManager {
                     guard newData.count == originalFileSize else {
                         throw "Not the correct file size for item \(file+ext)! (\(newData.count) vs \(originalFileSize))"
                     }
-                    if asTemp {
-                        try newData.write(to: FileManager.default.temporaryDirectory.appendingPathComponent(file+ext))
-                    } else {
-                        try newData.write(to: bgDir.appendingPathComponent(file+ext))
-                    }
+                    let destDir = try prepareStagingDirectory(forType: forType, asTemp: asTemp)
+                    try newData.write(to: destDir.appendingPathComponent(file+ext), options: .atomic)
                 } catch {
                     print(error.localizedDescription)
                     throw error.localizedDescription
@@ -238,6 +290,7 @@ class SpringboardColorManager {
             return
         }
         if forType == .switcher {
+            let destDir = try prepareStagingDirectory(forType: forType, asTemp: asTemp)
             for file in files {
                 let path: String = "\(folder)\(file)\(ext)"
                 let plistData = try Data(contentsOf: URL(fileURLWithPath: path))
@@ -257,13 +310,7 @@ class SpringboardColorManager {
                     let originalFileSize = try Data(contentsOf: newUrl).count
                     let newData = try addEmptyData(matchingSize: originalFileSize, to: plist)
                     if newData.count == originalFileSize {
-                        let dest = asTemp
-                            ? FileManager.default.temporaryDirectory.appendingPathComponent(file+ext)
-                            : bgDir.appendingPathComponent(file+ext)
-                        if FileManager.default.fileExists(atPath: dest.path) {
-                            try FileManager.default.removeItem(at: dest)
-                        }
-                        try newData.write(to: dest)
+                        try newData.write(to: destDir.appendingPathComponent(file+ext), options: .atomic)
                     } else {
                         print("NOT CORRECT SIZE")
                         throw "Not the correct file size for item \(file+ext)!"
@@ -275,19 +322,14 @@ class SpringboardColorManager {
             }
             return
         }
+        let destDir = try prepareStagingDirectory(forType: forType, asTemp: asTemp)
         for file in files {
             guard let url = Bundle.main.url(forResource: file, withExtension: ext) else {
                 throw "Backup url could not be found!"
             }
             let newColor: CIColor = CIColor(red: color.red, green: color.green, blue: color.blue, alpha: color.alpha*getAlphaMultiplier(forType: forType))
             let newData = try ColorSwapManager.setColor(url: url, color: newColor, blur: blur)
-            let dest = asTemp
-                ? FileManager.default.temporaryDirectory.appendingPathComponent(file+ext)
-                : bgDir.appendingPathComponent(file+ext)
-            if FileManager.default.fileExists(atPath: dest.path) {
-                try FileManager.default.removeItem(at: dest)
-            }
-            try newData.write(to: dest)
+            try newData.write(to: destDir.appendingPathComponent(file+ext), options: .atomic)
         }
     }
 
@@ -315,13 +357,9 @@ class SpringboardColorManager {
 
         // Stage all replacements first; refuse partial SpringBoard material writes.
         var staged: [(target: String, data: Data, backup: Data)] = []
+        let sourceDir = try resolveStagingDirectory(forType: forType, asTemp: asTemp)
         for file in files {
-            let sourceURL: URL
-            if asTemp {
-                sourceURL = FileManager.default.temporaryDirectory.appendingPathComponent(file + ext)
-            } else {
-                sourceURL = bgDir.appendingPathComponent(file + ext)
-            }
+            let sourceURL = sourceDir.appendingPathComponent(file + ext)
             let target = "\(folder)\(file)\(ext)"
             let newData = try Data(contentsOf: sourceURL)
             guard !newData.isEmpty else {

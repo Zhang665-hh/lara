@@ -198,6 +198,7 @@ struct SpringBoardView: View {
                 } else {
                     print("Failed to apply tweak \"" + option.title + "\"!!!")
                     failed = true
+                    break
                 }
                 
             } else if option.value == "Visible" {
@@ -210,6 +211,7 @@ struct SpringBoardView: View {
                         } else {
                             print("Failed to apply tweak \"" + option.title + "\"!!!")
                             failed = true
+                            break
                         }
                     } else {
                         do {
@@ -219,6 +221,7 @@ struct SpringBoardView: View {
                             print("Failed to apply tweak \"" + option.title + "\"!!!")
                             print(error.localizedDescription)
                             failed = true
+                            break
                         }
                     }
                 } else {
@@ -228,6 +231,7 @@ struct SpringBoardView: View {
                     } else {
                         print("Failed to apply tweak \"" + option.title + "\"!!!")
                         failed = true
+                        break
                     }
                 }
                 
@@ -240,15 +244,17 @@ struct SpringBoardView: View {
                     } else {
                         print("Failed to apply tweak \"" + option.title + "\"!!!")
                         failed = true
+                        break
                     }
                 } else {
                     print("\(option.title) does not have a springboard type!")
                     failed = true
+                    break
                 }
             }
         }
         if failed {
-            Alertinator.shared.alert(title: "useless ass alert", body: "something failed while applying tweaks")
+            Alertinator.shared.alert(title: "Apply stopped", body: "A tweak failed; remaining options were not applied to avoid mixed SpringBoard state.")
         } else {
             Alertinator.shared.alert(title: "Success!", body: "Respring to see changes.", actionLabel: "Respring", action: { mgr.respring() })
         }
