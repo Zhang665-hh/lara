@@ -338,6 +338,9 @@ struct PasscodeView: View {
         originalSize: Int
     ) -> Data? {
         guard originalSize > 0 else { return Data() }
+        // Cap allocation to mitigate zip-bomb themed imports.
+        let maxUncompressed = 16 * 1024 * 1024
+        guard originalSize <= maxUncompressed else { return nil }
         let destinationBuffer = UnsafeMutablePointer<UInt8>
             .allocate(capacity: originalSize)
         defer { destinationBuffer.deallocate() }
