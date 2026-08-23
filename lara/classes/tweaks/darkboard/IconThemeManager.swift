@@ -173,6 +173,8 @@ struct LaraThemedApp: Identifiable, Hashable {
             if(!chown1) {
                 throw NSError(domain: "IconThemer", code: 6, userInfo: [NSLocalizedDescriptionKey: "\(bundleIdentifier): 1st chown failed"])
             }
+            // Always restore mobile ownership even if overwrite fails mid-flight.
+            defer { _ = SantanderChown.chown(path: iconURL.path, uid: 33, gid: 33) }
             
             let overwrite = laramgr.shared.lara_overwritefile(target: iconURL.path, data: cachedIcon)
             if !overwrite.ok {
@@ -629,7 +631,11 @@ final class IconThemeManager: ObservableObject {
             }
         }
         if installedApps.isEmpty {
-            try? refreshApps()
+            if Thread.isMainThread {
+                try? refreshApps()
+            } else {
+                DispatchQueue.main.sync { try? self.refreshApps() }
+            }
         }
 
         let apps = installedApps.filter { !$0.hiddenFromSpringboard && !$0.pngIconPaths.isEmpty }

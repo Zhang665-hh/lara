@@ -277,14 +277,20 @@ struct SpringBoardView: View {
                         let target = "/System/Library/PrivateFrameworks/" + path
                         // Backup once before destroying assets with ### — VFS refuses
                         // size changes, but SBX rename can permanently trash .car files.
+                        // Direct Data(contentsOf:) usually fails under sandbox; use VFS/SBX.
                         let backupDir = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
                             .appendingPathComponent("lara_sb_backups", isDirectory: true)
                         try? FileManager.default.createDirectory(at: backupDir, withIntermediateDirectories: true)
                         let backupURL = backupDir.appendingPathComponent((path as NSString).lastPathComponent)
-                        if !FileManager.default.fileExists(atPath: backupURL.path),
-                           let original = try? Data(contentsOf: URL(fileURLWithPath: target)),
-                           !original.isEmpty {
-                            try? original.write(to: backupURL, options: .atomic)
+                        if !FileManager.default.fileExists(atPath: backupURL.path) {
+                            let original = laramgr.shared.vfsread(path: target, maxSize: 32 * 1024 * 1024)
+                                ?? (try? Data(contentsOf: URL(fileURLWithPath: target)))
+                            guard let original, !original.isEmpty,
+                                  (try? original.write(to: backupURL, options: .atomic)) != nil else {
+                                print("sb backup failed for \(target) — refusing ### overwrite")
+                                succeeded = false
+                                continue
+                            }
                         }
 
                         let randomGarbage = Data("###".utf8)

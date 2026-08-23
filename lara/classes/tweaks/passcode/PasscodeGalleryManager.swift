@@ -123,7 +123,10 @@ final class PasscodeGalleryManager: ObservableObject {
 
     func addRepo(_ urlString: String) async {
         let trimmed = urlString.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty, URL(string: trimmed) != nil, !repoURLs.contains(trimmed) else { return }
+        guard !trimmed.isEmpty,
+              let url = URL(string: trimmed),
+              url.scheme?.lowercased() == "https",
+              !repoURLs.contains(trimmed) else { return }
         repoURLs.append(trimmed)
         savePasscodeRepoURLs(repoURLs)
         await refreshRepos()
@@ -196,10 +199,12 @@ final class PasscodeGalleryManager: ObservableObject {
         guard data.count <= 2 * 1024 * 1024 else {
             throw URLError(.dataLengthExceedsMaximum)
         }
-        let baseURL = url.deletingLastPathComponent()
+        // Relative theme URLs must resolve against the *final* URL after redirects.
+        let resolvedURL = response.url ?? url
+        let baseURL = resolvedURL.deletingLastPathComponent()
 
         if let themes = try? JSONDecoder().decode([PasscodeGalleryTheme].self, from: data) {
-            let name = urlString == defaultPasscodeRepoURL ? "Cowabunga" : (url.deletingPathExtension().lastPathComponent)
+            let name = urlString == defaultPasscodeRepoURL ? "Cowabunga" : (resolvedURL.deletingPathExtension().lastPathComponent)
             return PasscodeRepoData(name: name, author: nil, icon: nil, themes: themes, baseURL: baseURL)
         }
 
