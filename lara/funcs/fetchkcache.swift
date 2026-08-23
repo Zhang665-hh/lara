@@ -82,8 +82,9 @@ func fetchkcache() -> Bool {
     var copyFailed = false
 
     while true {
-        let n = buffer.withUnsafeMutableBytes { rawBuffer in
-            read(src, rawBuffer.baseAddress!, bufferSize)
+        let n = buffer.withUnsafeMutableBytes { rawBuffer -> Int in
+            guard let base = rawBuffer.baseAddress else { return -1 }
+            return read(src, base, bufferSize)
         }
 
         if n < 0 {
@@ -98,8 +99,9 @@ func fetchkcache() -> Bool {
 
         var written = 0
         while written < n {
-            let w = buffer.withUnsafeBytes { rawBuffer in
-                write(dst, rawBuffer.baseAddress!.advanced(by: written), n - written)
+            let w = buffer.withUnsafeBytes { rawBuffer -> Int in
+                guard let base = rawBuffer.baseAddress else { return -1 }
+                return write(dst, base.advanced(by: written), n - written)
             }
 
             if w <= 0 {

@@ -17,6 +17,10 @@ patterns = [
     (re.compile(r"\bas!\b"), "as!"),
     (re.compile(r"URL\s*\(\s*string\s*:\s*[^\)]+\)\s*!(?!=)"), "URL(string:)!"),
     (re.compile(r"Bundle\.main\.bundleIdentifier\s*!"), "Bundle.main.bundleIdentifier!"),
+    (re.compile(r"\bfatalError\s*\("), "fatalError("),
+    (re.compile(r"\bpreconditionFailure\s*\("), "preconditionFailure("),
+    (re.compile(r"\.(first|last)\s*!"), ".first!/.last!"),
+    (re.compile(r"\bbaseAddress\s*!"), "baseAddress!"),
 ]
 
 skip_dirs = {".git", "build", "DerivedData", "PartyUI"}

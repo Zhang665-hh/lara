@@ -899,6 +899,9 @@ final class laramgr: ObservableObject {
     //  ret: return value from rc
     func rccall(name: String, args: [UInt64] = [], timeout: Int32 = 100) -> UInt64 {
         guard rcready, !rcrunning, let sbProc else { return 0 }
+        // Hold the session lock for the call so rcdestroy cannot free sbProc mid-flight.
+        rcrunning = true
+        defer { rcrunning = false }
         let RTLD_DEFAULT = UnsafeMutableRawPointer(bitPattern: -2)
         let ptr = dlsym(RTLD_DEFAULT, name)
         var argsCopy = args

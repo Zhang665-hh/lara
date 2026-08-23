@@ -837,13 +837,11 @@ final class IconThemeManager: ObservableObject {
                     // Cap per-entry uncompressed size to blunt zip-bomb RAM spikes.
                     let maxEntryBytes = 16 * 1024 * 1024
                     guard entry.uncompressedSize <= maxEntryBytes else {
-                        unzip_logmsg("skip oversized entry: \(entry.path) (\(entry.uncompressedSize) bytes)")
-                        continue
+                        throw NSError(domain: "IconTheme", code: 10, userInfo: [NSLocalizedDescriptionKey: "Theme entry too large: \(entry.path)"])
                     }
                     let extracted = try archive.extract(entry)
                     guard extracted.count <= maxEntryBytes else {
-                        unzip_logmsg("skip inflated entry over cap: \(entry.path)")
-                        continue
+                        throw NSError(domain: "IconTheme", code: 10, userInfo: [NSLocalizedDescriptionKey: "Theme entry inflated too large: \(entry.path)"])
                     }
                     unzip_logmsg("extracted size: \(extracted.count)")
                     
