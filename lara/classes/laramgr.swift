@@ -430,6 +430,9 @@ final class laramgr: ObservableObject {
     
     @discardableResult
     func lara_overwritefile(target: String, data: Data, fallback_vfs: Bool = true) -> (ok: Bool, message: String) {
+        guard !data.isEmpty else {
+            return (false, "refusing to overwrite with empty data")
+        }
         let result = sbxready ? sbxoverwrite(path: target, data: data) : (false, "sbx not ready")
         if result.0 {
             return result
