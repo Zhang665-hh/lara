@@ -65,7 +65,7 @@ final class PasscodeThemeManager: ObservableObject {
         )
     }
 
-    func backupIfNeeded(targetPath: String) {
+    func backupIfNeeded(targetPath: String) throws {
         createDirectoriesIfNeeded()
         let targetURL = URL(fileURLWithPath: targetPath)
         let backupURL = backupURLFor(targetPath: targetPath)
@@ -73,7 +73,7 @@ final class PasscodeThemeManager: ObservableObject {
         guard fm.fileExists(atPath: targetPath) else { return }
         
         if !fm.fileExists(atPath: backupURL.path) {
-            try? fm.copyItem(at: targetURL, to: backupURL)
+            try fm.copyItem(at: targetURL, to: backupURL)
         }
     }
 
@@ -120,7 +120,7 @@ final class PasscodeThemeManager: ObservableObject {
     }
 
     func applyImage(data: Data, to targetPath: String) throws {
-        backupIfNeeded(targetPath: targetPath)
+        try backupIfNeeded(targetPath: targetPath)
         let overwrite = laramgr.shared.lara_overwritefile(target: targetPath, data: data)
 
         if !overwrite.ok { throw NSError(domain: "PasscodeTheme", code: 2, userInfo: [NSLocalizedDescriptionKey: overwrite.message]) }

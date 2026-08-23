@@ -66,18 +66,23 @@ struct LaraThemedApp: Identifiable, Hashable {
     }
 
     func backupIconURL(fileName: String) -> URL {
-        originalIconsDir.appendingPathComponent(bundleIdentifier + "----" + version + "----" + fileName)
+        // Versionless path is the durable original. A versioned file must not
+        // replace it after an App Store update while icons are still themed.
+        originalIconsDir.appendingPathComponent(bundleIdentifier + "----" + fileName)
     }
 
     func backedUpIconURL(fileName: String) -> URL? {
         let fm = FileManager.default
-        let newURL = backupIconURL(fileName: fileName)
-        let oldURL = originalIconsDir.appendingPathComponent(bundleIdentifier + "----" + fileName)
+        let canonicalURL = backupIconURL(fileName: fileName)
+        let versionedURL = originalIconsDir.appendingPathComponent(bundleIdentifier + "----" + version + "----" + fileName)
 
-        if fm.fileExists(atPath: newURL.path) {
-            return newURL
-        } else if fm.fileExists(atPath: oldURL.path) {
-            return oldURL
+        if fm.fileExists(atPath: canonicalURL.path) {
+            return canonicalURL
+        } else if fm.fileExists(atPath: versionedURL.path) {
+            // Migrate legacy versioned backups into the stable location once.
+            try? fm.moveItem(at: versionedURL, to: canonicalURL)
+            if fm.fileExists(atPath: canonicalURL.path) { return canonicalURL }
+            return versionedURL
         }
         return nil
     }
@@ -87,18 +92,18 @@ struct LaraThemedApp: Identifiable, Hashable {
         let fm = FileManager.default
         var ok = true
         for pngIconPath in pngIconPaths {
-            let legacyURL = originalIconsDir.appendingPathComponent(bundleIdentifier + "----" + pngIconPath)
-            let newURL = backupIconURL(fileName: pngIconPath)
+            let versionedURL = originalIconsDir.appendingPathComponent(bundleIdentifier + "----" + version + "----" + pngIconPath)
+            let canonicalURL = backupIconURL(fileName: pngIconPath)
             let sourceURL = bundleURL.appendingPathComponent(pngIconPath)
 
             guard fm.fileExists(atPath: sourceURL.path) else { continue }
-            if fm.fileExists(atPath: newURL.path) {
+            if fm.fileExists(atPath: canonicalURL.path) {
                 continue
-            } else if fm.fileExists(atPath: legacyURL.path) {
-                do { try fm.moveItem(at: legacyURL, to: newURL) }
+            } else if fm.fileExists(atPath: versionedURL.path) {
+                do { try fm.moveItem(at: versionedURL, to: canonicalURL) }
                 catch { ok = false }
             } else {
-                do { try fm.copyItem(at: sourceURL, to: newURL) }
+                do { try fm.copyItem(at: sourceURL, to: canonicalURL) }
                 catch { ok = false }
             }
         }
@@ -604,7 +609,10 @@ final class IconThemeManager: ObservableObject {
                 self.fixupProgress = 1.0
                 self.fixupMessage = errors.isEmpty ? "Your apps should now function properly." : errors.joined(separator: "\n\n")
                 self.isFixingUp = false
-                UserDefaults.standard.set(false, forKey: self.pendingFixupKey)
+                // Keep pending so a partial failure can be retried after the next open.
+                if errors.isEmpty {
+                    UserDefaults.standard.set(false, forKey: self.pendingFixupKey)
+                }
             }
         }
     }

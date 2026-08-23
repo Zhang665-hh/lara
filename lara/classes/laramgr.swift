@@ -423,6 +423,9 @@ final class laramgr: ObservableObject {
         if sbxready {
             do {
                 let data = try Data(contentsOf: URL(fileURLWithPath: source))
+                guard !data.isEmpty else {
+                    return (false, "refusing to overwrite with empty source: \(source)")
+                }
                 result = sbxoverwrite(path: target, data: data)
             } catch {
                 result = (false, "sbx read source failed: \(error.localizedDescription)")
@@ -715,8 +718,8 @@ final class laramgr: ObservableObject {
     func ensureYouTubeRemoteCall() -> RemoteCall? {
         #if !DISABLE_REMOTECALL
         if let existing = ytProc { return existing }
-        guard dsready else {
-            logmsg("(rc) youtube remote call requires darksword first")
+        guard dsready, !rcrunning else {
+            logmsg("(rc) youtube remote call requires darksword first (or session busy)")
             return nil
         }
         let proc = RemoteCall(process: "youtube", useMigFilterBypass: false)
@@ -888,19 +891,19 @@ final class laramgr: ObservableObject {
     //  - timeout: timeout in ms
     //  ret: return value from rc
     func rccall(name: String, args: [UInt64] = [], timeout: Int32 = 100) -> UInt64 {
-        guard rcready else { return 0 }
+        guard rcready, !rcrunning, let sbProc else { return 0 }
         let RTLD_DEFAULT = UnsafeMutableRawPointer(bitPattern: -2)
         let ptr = dlsym(RTLD_DEFAULT, name)
         var argsCopy = args
         return name.withCString { (cName: UnsafePointer<CChar>) -> UInt64 in
             UInt64(argsCopy.withUnsafeMutableBufferPointer { buffer in
-                sbProc?.doStable(
+                sbProc.doStable(
                     withTimeout: timeout,
                     functionName: UnsafeMutablePointer(mutating: cName),
                     functionPointer: ptr,
                     args: buffer.baseAddress,
                     argCount: UInt(args.count)
-                ) ?? 0
+                )
             })
         }
     }
