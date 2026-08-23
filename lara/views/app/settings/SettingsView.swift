@@ -301,7 +301,10 @@ struct SettingsView: View {
         UserDefaults.standard.removeObject(forKey: "lara.kernelcache_path")
         UserDefaults.standard.removeObject(forKey: "lara.kernelcache_size")
         
-        let docsPath = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first!
+        guard let docsPath = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first else {
+            mgr.logmsg("Failed to clear kernelcache: Documents directory unavailable")
+            return
+        }
         let kernelcacheDocPath = docsPath.appendingPathComponent("kernelcache")
         
         do {

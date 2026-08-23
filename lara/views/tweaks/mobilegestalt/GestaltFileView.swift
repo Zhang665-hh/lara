@@ -57,8 +57,11 @@ struct GestaltFileView: View {
     }
     
     func mgSavedExport() {
-        let documentsURL = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first
-        let fileURL = documentsURL!.appendingPathComponent("SavedGestalt.plist")
+        guard let documentsURL = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first else {
+            Alertinator.shared.alert(title: "Failed to export MobileGestalt!", body: "Documents directory unavailable.")
+            return
+        }
+        let fileURL = documentsURL.appendingPathComponent("SavedGestalt.plist")
         presentShareSheet(with: fileURL)
     }
     

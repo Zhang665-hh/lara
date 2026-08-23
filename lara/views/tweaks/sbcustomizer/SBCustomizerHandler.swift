@@ -78,7 +78,9 @@ class SpringboardColorManager {
         }
         do {
             let newData = try Data(contentsOf: bgDir!.appendingPathComponent("\(finalFiles[forType]![0])\(fileExt[forType]!)"))
-            let plist = try PropertyListSerialization.propertyList(from: newData, options: [], format: nil) as! [String: Any]
+            guard let plist = try PropertyListSerialization.propertyList(from: newData, options: [], format: nil) as? [String: Any] else {
+                throw "Invalid property list format"
+            }
             // get the colors
             let r = getDictValue(plist, "red") as? Double ?? CIColor.gray.red
             let g = getDictValue(plist, "green") as? Double ?? CIColor.gray.green
@@ -100,7 +102,9 @@ class SpringboardColorManager {
         }
         do {
             let newData = try Data(contentsOf: bgDir!.appendingPathComponent("\(finalFiles[forType]![0])\(fileExt[forType]!)"))
-            let plist = try PropertyListSerialization.propertyList(from: newData, options: [], format: nil) as! [String: Any]
+            guard let plist = try PropertyListSerialization.propertyList(from: newData, options: [], format: nil) as? [String: Any] else {
+                throw "Invalid property list format"
+            }
             // get the blur
             return getDictValue(plist, "blurRadius") as? Double ?? 30
         } catch {
@@ -110,24 +114,20 @@ class SpringboardColorManager {
     }
     
     static func revertFiles(forType: SpringboardType) throws {
-        if finalFiles[forType] != nil && fileFolders[forType] != nil && fileExt[forType] != nil {
-            for file in finalFiles[forType]! {
-                if let url: URL = Bundle.main.url(forResource: file, withExtension: fileExt[forType]!) {
-                    let replacementFile = try Data(contentsOf: url)
-                    
-                    let result = laramgr.shared.lara_overwritefile(target: "\(fileFolders[forType]!)\(file)\(fileExt[forType]!)", data: replacementFile)
-                    
-                    if result.ok {
-                        throw "successfully reverted files"
-                    } else {
-                        throw "failed to overwrite with replacement file!"
-                    }
-                } else {
-                    throw "No file resource was found!"
-                }
-            }
-        } else {
+        guard let files = finalFiles[forType],
+              let folder = fileFolders[forType],
+              let ext = fileExt[forType] else {
             throw "File type doesn't exist in table???"
+        }
+        for file in files {
+            guard let url = Bundle.main.url(forResource: file, withExtension: ext) else {
+                throw "No file resource was found!"
+            }
+            let replacementFile = try Data(contentsOf: url)
+            let result = laramgr.shared.lara_overwritefile(target: "\(folder)\(file)\(ext)", data: replacementFile)
+            if !result.ok {
+                throw "failed to overwrite with replacement file!"
+            }
         }
     }
     
@@ -157,7 +157,9 @@ class SpringboardColorManager {
             if url != nil {
                 do {
                     let plistData = try Data(contentsOf: url!)
-                    var plist = try PropertyListSerialization.propertyList(from: plistData, options: [], format: nil) as! [String: Any]
+                    guard var plist = try PropertyListSerialization.propertyList(from: plistData, options: [], format: nil) as? [String: Any] else {
+                        throw "Invalid property list format"
+                    }
                     
                     if var firstLevel = plist["baseMaterial"] as? [String : Any], var secondLevel = firstLevel["tinting"] as? [String: Any], var thirdLevel = secondLevel["tintColor"] as? [String: Any] {
                         // set the colors
@@ -230,7 +232,9 @@ class SpringboardColorManager {
                 for file in finalFiles[forType]! {
                     let path: String = "\(fileFolders[forType]!)\(file)\(fileExt[forType]!)"
                     let plistData = try Data(contentsOf: URL(fileURLWithPath: path))
-                    var plist = try PropertyListSerialization.propertyList(from: plistData, options: [], format: nil) as! [String: Any]
+                    guard var plist = try PropertyListSerialization.propertyList(from: plistData, options: [], format: nil) as? [String: Any] else {
+                        throw "Invalid property list format"
+                    }
                     
                     if var firstLevel = plist["baseMaterial"] as? [String : Any], var secondLevel = firstLevel["materialFiltering"] as? [String: Any] {
                         secondLevel["blurRadius"] = blur
@@ -325,9 +329,7 @@ class SpringboardColorManager {
                     // overwrite file
                     let result = laramgr.shared.lara_overwritefile(target: "\(fileFolders[forType]!)\(file)\(fileExt[forType]!)", data: newData!)
                     
-                    if result.ok {
-                        throw "successfully reverted files"
-                    } else {
+                    if !result.ok {
                         throw "failed to overwrite with replacement file!"
                     }
                 } catch {

@@ -322,9 +322,8 @@ struct repofontrow: View {
         } label: {
             HStack {
                 Text(font.name)
-                    .font(iddownloaded && localurl != nil
-                        ? viewfontfile(path: localurl!.path, size: 17)
-                        : .system(size: 17))
+                    .font((iddownloaded ? localurl : nil).map { viewfontfile(path: $0.path, size: 17) }
+                        ?? .system(size: 17))
                 Spacer()
                 if repostore.downloading.contains(font.url) {
                     ProgressView()

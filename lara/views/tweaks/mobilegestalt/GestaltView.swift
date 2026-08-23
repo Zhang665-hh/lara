@@ -497,7 +497,7 @@ struct GestaltView: View {
         // then return the binding
         return Binding(get: {
             // get the value in terms of the type and return it as a bool.
-            if let value = cacheExtra[keys.first!] as? T?, let enableValue {
+            if let key = keys.first, let value = cacheExtra[key] as? T?, let enableValue {
                 return value == enableValue
             }
             return false
@@ -529,7 +529,7 @@ struct GestaltView: View {
         ]
         
         return Binding(get: {
-            if let value = cacheExtra[keys.first!] as? Int? {
+            if let key = keys.first, let value = cacheExtra[key] as? Int? {
                 return value == 1
             }
             return false
