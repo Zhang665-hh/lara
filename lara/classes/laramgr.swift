@@ -714,23 +714,25 @@ final class laramgr: ObservableObject {
     }
 
     /// Create or return a RemoteCall attached to YouTube. Safe to call before exploit is ready (returns nil).
+    /// While `rcrunning` is set (create/destroy/in-use), returns the currently published `ytProc` only —
+    /// destroy nils `ytProc` before background teardown, so callers never receive a freed object.
     @discardableResult
     func ensureYouTubeRemoteCall() -> RemoteCall? {
         #if !DISABLE_REMOTECALL
-        // Reuse a live YouTube RC even if another session is briefly marked busy.
-        // Only gate *creation* so rccall/rcinit cannot race a fresh attach.
-        if let existing = ytProc { return existing }
-        guard dsready, !rcrunning else {
-            logmsg("(rc) youtube remote call requires darksword first (or session busy)")
+        guard dsready else {
+            logmsg("(rc) youtube remote call requires darksword first")
             return nil
+        }
+        // Serialize vs rcdestroy/rcinit: never observe-then-use across a clear of ytProc.
+        if rcrunning {
+            return ytProc
+        }
+        if let existing = ytProc {
+            return existing
         }
         // Claim the RC session slot so rcinit/rcdestroy cannot tear down mid-init.
         rcrunning = true
-        defer {
-            DispatchQueue.main.async { [weak self] in
-                self?.rcrunning = false
-            }
-        }
+        defer { rcrunning = false }
         let proc = RemoteCall(process: "youtube", useMigFilterBypass: false)
         ytProc = proc
         if proc == nil {
@@ -744,6 +746,45 @@ final class laramgr: ObservableObject {
         return proc
         #else
         return nil
+        #endif
+    }
+
+    /// Run work against the YouTube RemoteCall while holding `rcrunning` so `rcdestroy` cannot UAF it.
+    func withYouTubeRemoteCall(_ body: (RemoteCall) -> Void) {
+        #if !DISABLE_REMOTECALL
+        guard dsready else {
+            logmsg("(rc) youtube remote call requires darksword first")
+            return
+        }
+        guard !rcrunning else {
+            logmsg("(rc) youtube remote call busy")
+            return
+        }
+        rcrunning = true
+        defer { rcrunning = false }
+
+        let proc: RemoteCall?
+        if let existing = ytProc {
+            proc = existing
+        } else {
+            let created = RemoteCall(process: "youtube", useMigFilterBypass: false)
+            ytProc = created
+            proc = created
+            if created == nil {
+                let error = RemoteCall.lastInitError()
+                if let error, !error.isEmpty {
+                    logmsg("(rc) youtube remote call init failed: \(error)")
+                } else {
+                    logmsg("(rc) youtube remote call init failed")
+                }
+                return
+            }
+        }
+        guard let proc else {
+            logmsg("(rc) YouTube tweaks unavailable (process not attached)")
+            return
+        }
+        body(proc)
         #endif
     }
     

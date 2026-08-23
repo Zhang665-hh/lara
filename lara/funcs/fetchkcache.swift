@@ -46,11 +46,10 @@ func fetchkcache() -> Bool {
 
     unlink(outpath)
 
-    var ogvn: UInt64 = 0
-    var ogvd: UInt64 = 0
+    var redirectState = vn_redirect_state_t(orig_vnode: 0, orig_v_data: 0, to_fd: -1, from_fd: -1)
 
     let redirect = kcpath.withCString { kcCString in
-        vn_fileredirect(fakeread, kcCString, &ogvn, &ogvd)
+        vn_fileredirect(fakeread, kcCString, &redirectState)
     }
     if !redirect {
         globallogger.log("(fetchkcache) failed to redirect vnode")
@@ -59,21 +58,21 @@ func fetchkcache() -> Bool {
 
     let src = open(fakeread, O_RDONLY)
     if src < 0 {
-        vn_fileunredirect(ogvn, ogvd)
+        vn_fileunredirect(&redirectState)
         return false
     }
 
     let dst = open(outpath, O_WRONLY | O_CREAT | O_TRUNC, 0o644)
     if dst < 0 {
         close(src)
-        vn_fileunredirect(ogvn, ogvd)
+        vn_fileunredirect(&redirectState)
         return false
     }
 
     defer {
         close(src)
         close(dst)
-        vn_fileunredirect(ogvn, ogvd)
+        vn_fileunredirect(&redirectState)
     }
 
     var buffer = [UInt8](repeating: 0, count: 0x4000)

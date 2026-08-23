@@ -804,12 +804,15 @@ final class IconThemeManager: ObservableObject {
             unzip_logmsg("entry: \(entry.path)")
 
             let normalizedPath = entry.path.replacingOccurrences(of: "\\", with: "/")
-            // Reject absolute paths and empty names before joining.
+            // Reject absolute paths, empty names, and obvious traversal before joining.
+            let hasDotDot = normalizedPath.split(separator: "/").contains("..")
             guard !normalizedPath.isEmpty,
                   !normalizedPath.hasPrefix("/"),
-                  !normalizedPath.hasPrefix("~") else {
-                unzip_logmsg("skip unsafe path: \(normalizedPath)")
-                continue
+                  !normalizedPath.hasPrefix("~"),
+                  !hasDotDot else {
+                unzip_logmsg("abort unsafe path: \(normalizedPath)")
+                try? FileManager.default.removeItem(at: destination)
+                throw NSError(domain: "IconTheme", code: 11, userInfo: [NSLocalizedDescriptionKey: "Theme archive contains unsafe path: \(normalizedPath)"])
             }
             let outputURL = destination.appendingPathComponent(normalizedPath).standardizedFileURL
             let destRoot = destination.standardizedFileURL.path
@@ -819,8 +822,9 @@ final class IconThemeManager: ObservableObject {
 
             // Ensure resolved path stays under destination (blocks .. and symlink escapes).
             guard outPath == destRoot || outPath.hasPrefix(destRoot + "/") else {
-                unzip_logmsg("skip path traversal: \(normalizedPath)")
-                continue
+                unzip_logmsg("abort path traversal: \(normalizedPath)")
+                try? FileManager.default.removeItem(at: destination)
+                throw NSError(domain: "IconTheme", code: 11, userInfo: [NSLocalizedDescriptionKey: "Theme archive path escapes destination: \(normalizedPath)"])
             }
 
             if entry.isDirectory {
@@ -828,6 +832,8 @@ final class IconThemeManager: ObservableObject {
                     try FileManager.default.createDirectory(at: outputURL, withIntermediateDirectories: true)
                 } catch {
                     unzip_logmsg("mkdir fail: \(error.localizedDescription)")
+                    try? FileManager.default.removeItem(at: destination)
+                    throw error
                 }
 
             } else {
