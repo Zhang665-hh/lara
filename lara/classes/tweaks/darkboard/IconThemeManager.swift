@@ -111,24 +111,38 @@ struct LaraThemedApp: Identifiable, Hashable {
     }
 
     func restorePNGIcons() throws {
-        for iconName in pngIconPaths {
-            guard let originalURL = backedUpIconURL(fileName: iconName) else { continue }
-            let iconURL = bundleURL.appendingPathComponent(iconName)
-            let data = try Data(contentsOf: originalURL)
-            // Match setPNGIcons: mobile ownership for write, then restore to _installd.
-            let chown1 = SantanderChown.chown(path: iconURL.path, uid: 501, gid: 501)
-            if !chown1 {
-                throw NSError(domain: "IconThemer", code: 6, userInfo: [NSLocalizedDescriptionKey: "\(bundleIdentifier): restore chown(501) failed"])
+        var restored: [(path: String, themed: Data)] = []
+        do {
+            for iconName in pngIconPaths {
+                guard let originalURL = backedUpIconURL(fileName: iconName) else { continue }
+                let iconURL = bundleURL.appendingPathComponent(iconName)
+                let stockData = try Data(contentsOf: originalURL)
+                // Capture current (themed) bytes for mid-list rollback before overwrite.
+                let themedData = (try? Data(contentsOf: iconURL)) ?? Data()
+                let chown1 = SantanderChown.chown(path: iconURL.path, uid: 501, gid: 501)
+                if !chown1 {
+                    throw NSError(domain: "IconThemer", code: 6, userInfo: [NSLocalizedDescriptionKey: "\(bundleIdentifier): restore chown(501) failed"])
+                }
+                defer { _ = SantanderChown.chown(path: iconURL.path, uid: 33, gid: 33) }
+                let result = laramgr.shared.lara_overwritefile(target: iconURL.path, data: stockData)
+                if !result.ok {
+                    throw NSError(domain: "IconThemer", code: 2, userInfo: [NSLocalizedDescriptionKey: "\(bundleIdentifier): \(result.message)"])
+                }
+                if !themedData.isEmpty {
+                    restored.append((iconURL.path, themedData))
+                }
+                let chown2 = SantanderChown.chown(path: iconURL.path, uid: 33, gid: 33)
+                if !chown2 {
+                    throw NSError(domain: "IconThemer", code: 6, userInfo: [NSLocalizedDescriptionKey: "\(bundleIdentifier): restore chown(33) failed"])
+                }
             }
-            defer { _ = SantanderChown.chown(path: iconURL.path, uid: 33, gid: 33) }
-            let result = laramgr.shared.lara_overwritefile(target: iconURL.path, data: data)
-            if !result.ok {
-                throw NSError(domain: "IconThemer", code: 2, userInfo: [NSLocalizedDescriptionKey: "\(bundleIdentifier): \(result.message)"])
+        } catch {
+            for item in restored.reversed() {
+                _ = SantanderChown.chown(path: item.path, uid: 501, gid: 501)
+                _ = laramgr.shared.lara_overwritefile(target: item.path, data: item.themed)
+                _ = SantanderChown.chown(path: item.path, uid: 33, gid: 33)
             }
-            let chown2 = SantanderChown.chown(path: iconURL.path, uid: 33, gid: 33)
-            if !chown2 {
-                throw NSError(domain: "IconThemer", code: 6, userInfo: [NSLocalizedDescriptionKey: "\(bundleIdentifier): restore chown(33) failed"])
-            }
+            throw error
         }
     }
 

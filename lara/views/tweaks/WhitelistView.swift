@@ -157,7 +157,8 @@ struct WhitelistView: View {
             let url = URL(fileURLWithPath: path)
             let data = try Data(contentsOf: url, options: .mappedIfSafe)
             if data.count > maxSize {
-                return data.prefix(maxSize)
+                // Truncated backups would corrupt rollback of Rejections/ban plists.
+                return nil
             }
             return data
         } catch {

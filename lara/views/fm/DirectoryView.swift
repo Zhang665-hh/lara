@@ -567,11 +567,8 @@ struct santanderdirview: View {
     /// Stage to a sibling temp, then replace/move into place so a failed copy cannot leave the destination deleted.
     private static func atomicCopy(from src: String, to dest: String, replace: Bool) throws {
         let destURL = URL(fileURLWithPath: dest)
-        let staging = dest + ".lara_paste_tmp"
+        let staging = dest + ".lara_paste_\(UUID().uuidString).tmp"
         let stagingURL = URL(fileURLWithPath: staging)
-        if FileManager.default.fileExists(atPath: staging) {
-            try santanderfs.removeItemClearingImmutable(atPath: staging)
-        }
         try FileManager.default.copyItem(atPath: src, toPath: staging)
         defer {
             if FileManager.default.fileExists(atPath: staging) {

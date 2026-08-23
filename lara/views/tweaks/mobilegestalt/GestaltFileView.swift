@@ -67,12 +67,8 @@ struct GestaltFileView: View {
     
     func mgFSExport() {
         do {
-            let tempURL = FileManager.default.temporaryDirectory.appendingPathComponent("com.apple.MobileGestalt.plist")
-            
-            if FileManager.default.fileExists(atPath: tempURL.path) {
-                try FileManager.default.removeItem(at: tempURL)
-            }
-            
+            let tempURL = FileManager.default.temporaryDirectory
+                .appendingPathComponent("MobileGestalt-\(UUID().uuidString).plist")
             try FileManager.default.copyItem(at: URL(fileURLWithPath: mgCurrentPath), to: tempURL)
             presentShareSheet(with: tempURL)
         } catch {
@@ -82,12 +78,8 @@ struct GestaltFileView: View {
     
     func mgCurrentExport() {
         do {
-            let tempURL = FileManager.default.temporaryDirectory.appendingPathComponent("com.apple.MobileGestalt.plist")
-            
-            if FileManager.default.fileExists(atPath: tempURL.path) {
-                try FileManager.default.removeItem(at: tempURL)
-            }
-            
+            let tempURL = FileManager.default.temporaryDirectory
+                .appendingPathComponent("MobileGestalt-\(UUID().uuidString).plist")
             let mgCurrentData = try PropertyListSerialization.data(fromPropertyList: mgCurrentDict, format: .binary, options: 0)
             try mgCurrentData.write(to: tempURL)
             presentShareSheet(with: tempURL)
