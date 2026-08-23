@@ -274,7 +274,8 @@ struct RemoteView: View {
                             DispatchQueue.main.async {
                                 mgr.eu1running = false
                             }
-                            // fix unable to load app info (second daemon after first releases the RC session)
+                            // Schedule after this completion returns so endRCRunning() has cleared the session.
+                            DispatchQueue.main.async {
                             mgr.rcinitDaemon(serviceName: "com.apple.appstorecomponentsd.xpc", process: "appstorecomponentsd", migbypass: false) { proc in
                                 guard let proc else {
                                     mgr.logmsg("rc init failed")
@@ -294,6 +295,7 @@ struct RemoteView: View {
                                     mgr.eu2running = false
                                 }
                             }
+                            } // end deferred second-daemon schedule
                         }
                     } label: {
                         HStack {

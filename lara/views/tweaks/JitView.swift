@@ -103,6 +103,14 @@ struct JitView: View {
                 }
             }
             .navigationTitle("LaraJIT")
+            .alert("JIT", isPresented: Binding(
+                get: { lastResult != nil },
+                set: { if !$0 { lastResult = nil } }
+            )) {
+                Button("OK") { lastResult = nil }
+            } message: {
+                Text(lastResult ?? "")
+            }
         }
         .onAppear {
             if mgr.sbxready {
@@ -185,14 +193,17 @@ struct JitView: View {
 					DispatchQueue.main.async {
 						if err == 0 {
 							globallogger.log("(jit) enabled for \(bundleID)")
+							lastResult = "JIT enabled for \(bundleID)"
 						} else {
 							globallogger.log("(jit) error enabling for \(bundleID)!")
+							lastResult = "JIT failed for \(bundleID) (err \(err))"
 						}
 						enablingbid = nil
 					}
 				}, completion: {
 					if !started {
 						globallogger.log("(jit) error: springboard remote call unavailable")
+						lastResult = "SpringBoard remote call unavailable"
 						enablingbid = nil
 					}
 				})
@@ -206,6 +217,7 @@ struct JitView: View {
 	                    runenable()
 	                } else {
 	                    globallogger.log("(jit) rcinit failed")
+	                    lastResult = "Failed to init SpringBoard remote call"
 	                    enablingbid = nil
 	                }
 	            }

@@ -175,9 +175,11 @@ struct VarCleanView: View {
 
         for path in selectedpaths {
             do {
-                if filemgr.fileExists(atPath: path) {
-                    try filemgr.removeItem(atPath: path)
+                guard filemgr.fileExists(atPath: path) else {
+                    // Missing path is a skip, not a successful delete.
+                    continue
                 }
+                try filemgr.removeItem(atPath: path)
                 deletedcount += 1
             } catch {
                 failures.append("\(path): \(error.localizedDescription)")

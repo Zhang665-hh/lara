@@ -276,9 +276,27 @@ struct DecryptView: View {
                 var isDir: ObjCBool = false
                 guard fm.fileExists(atPath: src, isDirectory: &isDir) else { continue }
                 if isDir.boolValue {
-                    try? fm.createDirectory(atPath: dst, withIntermediateDirectories: true)
+                    do {
+                        try fm.createDirectory(atPath: dst, withIntermediateDirectories: true)
+                    } catch {
+                        DispatchQueue.main.async {
+                            decryptingbid = nil
+                            errormsg = "Failed to create directory in decrypted copy"
+                            laramgr.shared.logmsg("(decrypt) mkdir failed: \(dst)")
+                        }
+                        return
+                    }
                 } else {
-                    try? fm.copyItem(atPath: src, toPath: dst)
+                    do {
+                        try fm.copyItem(atPath: src, toPath: dst)
+                    } catch {
+                        DispatchQueue.main.async {
+                            decryptingbid = nil
+                            errormsg = "Failed to copy file into decrypted payload"
+                            laramgr.shared.logmsg("(decrypt) copy failed: \(src)")
+                        }
+                        return
+                    }
                 }
             }
 
@@ -311,7 +329,11 @@ struct DecryptView: View {
                     let fwName = (fw as NSString).deletingPathExtension
                     let fwBinary = frameworksPath + "/" + fw + "/" + fwName
                     if !fm.fileExists(atPath: fwBinary) { continue }
-                    if is_encrypted_path(fwBinary) > 0 {
+                    let encState = is_encrypted_path(fwBinary)
+                    if encState < 0 {
+                        frameworkFailures.append(fwName)
+                        laramgr.shared.logmsg("(decrypt) framework \(fwName) encryption probe failed")
+                    } else if encState > 0 {
                         // Decrypt from the live in-memory mapping; destination is the IPA copy.
                         let liveFwBinary = srcFrameworks + "/" + fw + "/" + fwName
                         let fwRet = decrypt_binary_pid(liveFwBinary, pid, fwBinary)
