@@ -367,14 +367,16 @@ struct santanderdirview: View {
         }
         .sheet(item: $chmoditem) { entry in
             santanderchmodsheet(item: entry) { mode in
-                santanderfs.clearImmutableIfPossible(atPath: entry.path)
+                let cleared = santanderfs.clearImmutableIfPossible(atPath: entry.path)
+                defer { santanderfs.restoreImmutableIfNeeded(cleared) }
                 let ok = entry.path.withCString { apfs_mod($0, mode) == 0 }
                 msg = santandermsg(title: "Chmod", text: ok ? "Operation completed." : "Operation failed.")
             }
         }
         .sheet(item: $chownitem) { entry in
             santanderchownsheet(item: entry) { uid, gid in
-                santanderfs.clearImmutableIfPossible(atPath: entry.path)
+                let cleared = santanderfs.clearImmutableIfPossible(atPath: entry.path)
+                defer { santanderfs.restoreImmutableIfNeeded(cleared) }
                 let ok = entry.path.withCString { apfs_own($0, uid, gid) == 0 }
                 msg = santandermsg(title: "Chown", text: ok ? "Operation completed." : "Operation failed.")
             }
@@ -482,8 +484,19 @@ struct santanderdirview: View {
         }
 
         do {
-            santanderfs.clearImmutableIfPossible(atPath: entry.path)
-            try FileManager.default.moveItem(atPath: entry.path, toPath: dest)
+            let cleared = santanderfs.clearImmutableIfPossible(atPath: entry.path)
+            do {
+                try FileManager.default.moveItem(atPath: entry.path, toPath: dest)
+                // Flags travel with the inode; restore on the destination path.
+                if let cleared {
+                    santanderfs.restoreImmutableIfNeeded(
+                        santanderfs.ClearedImmutable(path: dest, restore: cleared.restore)
+                    )
+                }
+            } catch {
+                santanderfs.restoreImmutableIfNeeded(cleared)
+                throw error
+            }
             model.load(query: query.trimmingCharacters(in: .whitespacesAndNewlines))
         } catch {
             msg = santandermsg(title: "Rename Failed", text: error.localizedDescription)

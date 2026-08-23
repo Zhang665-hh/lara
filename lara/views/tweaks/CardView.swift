@@ -616,20 +616,11 @@ struct CardView: View {
 
     private func writeprefersbx(path: String, data: Data) -> Bool {
         guard !data.isEmpty else { return false }
-        do {
-            print("(card) writing to \(path)")
-            try data.write(to: URL(fileURLWithPath: path), options: .atomic)
-            return true
-        } catch {
-            guard mgr.vfsready else { return false }
-            // VFS same-size only — never zero-pad a shorter card image/json into place.
-            if let attrs = try? FileManager.default.attributesOfItem(atPath: path),
-               let size = attrs[.size] as? NSNumber,
-               data.count == size.intValue {
-                return mgr.vfsoverwritewithdata(target: path, data: data)
-            }
-            return false
-        }
+        // Always go through the shared overwrite gate (file-op lock + iOS16 immutable restore).
+        let result = mgr.lara_overwritefile(target: path, data: data)
+        if result.ok { return true }
+        mgr.logmsg("(card) overwrite failed for \(path): \(result.message)")
+        return false
     }
 }
 

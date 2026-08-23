@@ -459,30 +459,36 @@ final class laramgr: ObservableObject {
     /// Recursive lock: same-thread VFS nesting is allowed; concurrent top-level callers are refused.
     private let fileOpLock = NSRecursiveLock()
 
+    /// Publish `fileopinprogress` from a fresh depth read so overlapping begin/end async
+    /// publishes cannot leave the UI stuck idle while an op is still held.
+    private func scheduleFileOpProgressPublish() {
+        let apply: () -> Void = { [weak self] in
+            guard let self else { return }
+            self.fileOpLock.lock()
+            let busy = self.fileOpDepth > 0
+            self.fileOpLock.unlock()
+            self.fileopinprogress = busy
+        }
+        if Thread.isMainThread {
+            apply()
+        } else {
+            DispatchQueue.main.async(execute: apply)
+        }
+    }
+
     /// Begin a file overwrite critical section. Returns false if another thread already holds the op.
     @discardableResult
     private func beginFileOp() -> Bool {
         guard fileOpLock.try() else { return false }
-        let body: () -> Void = {
-            self.fileOpDepth += 1
-            if self.fileOpDepth == 1 {
-                self.fileopinprogress = true
-            }
-        }
-        if Thread.isMainThread { body() }
-        else { DispatchQueue.main.sync(execute: body) }
+        // Keep depth under the lock; never main.sync while locked (deadlock if main awaits this op).
+        fileOpDepth += 1
+        scheduleFileOpProgressPublish()
         return true
     }
 
     private func endFileOp() {
-        let body: () -> Void = {
-            self.fileOpDepth = max(0, self.fileOpDepth - 1)
-            if self.fileOpDepth == 0 {
-                self.fileopinprogress = false
-            }
-        }
-        if Thread.isMainThread { body() }
-        else { DispatchQueue.main.sync(execute: body) }
+        fileOpDepth = max(0, fileOpDepth - 1)
+        scheduleFileOpProgressPublish()
         fileOpLock.unlock()
     }
 
@@ -812,25 +818,25 @@ final class laramgr: ObservableObject {
         return true
     }
 
-    /// Create or return a RemoteCall attached to YouTube. Safe to call before exploit is ready (returns nil).
-    /// While `rcrunning` is set (create/destroy/in-use), returns nil — never hand out `ytProc`
-    /// without holding the session lock (UAF vs deferred `rcdestroy`).
+    /// Warm `ytProc` under the session lock. Prefer `withYouTubeRemoteCall` for use —
+    /// this API never hands out an unlocked pointer (UAF vs deferred `rcdestroy`).
+    /// Returns whether a live YouTube RemoteCall exists after the call.
     @discardableResult
-    func ensureYouTubeRemoteCall() -> RemoteCall? {
+    func ensureYouTubeRemoteCall() -> Bool {
         #if !DISABLE_REMOTECALL
         guard dsready else {
             logmsg("(rc) youtube remote call requires darksword first")
-            return nil
+            return false
         }
         // Claim the session lock first so create cannot race another ensure/rcinit
         // and orphan a live YouTube RemoteCall by overwriting ytProc.
         guard beginRCRunning() else {
             logmsg("(rc) youtube remote call busy")
-            return nil
+            return false
         }
         defer { endRCRunning() }
         if let existing = ytProc {
-            return existing
+            return true
         }
         let proc = RemoteCall(process: "youtube", useMigFilterBypass: false)
         ytProc = proc
@@ -842,9 +848,9 @@ final class laramgr: ObservableObject {
                 logmsg("(rc) youtube remote call init failed")
             }
         }
-        return proc
+        return proc != nil
         #else
-        return nil
+        return false
         #endif
     }
 

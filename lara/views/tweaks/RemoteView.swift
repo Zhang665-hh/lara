@@ -254,10 +254,14 @@ struct RemoteView: View {
                         mgr.eu2progress = 0.0
                         mgr.eu1running = true
                         mgr.eu2running = true
+                        // Serialize daemon RC sessions — both cannot hold beginRCRunning at once.
                         mgr.rcinitDaemon(serviceName: "com.apple.managedappdistributiond.xpc", process: "managedappdistributiond", migbypass: false) { proc in
                             guard let proc else {
                                 mgr.logmsg("rc init failed")
-                                mgr.eu1running = false
+                                DispatchQueue.main.async {
+                                    mgr.eu1running = false
+                                    mgr.eu2running = false
+                                }
                                 return
                             }
                             mgr.logmsg("rc init succeeded!")
@@ -270,23 +274,25 @@ struct RemoteView: View {
                             DispatchQueue.main.async {
                                 mgr.eu1running = false
                             }
-                        }
-                        // fix unable to load app info
-                        mgr.rcinitDaemon(serviceName: "com.apple.appstorecomponentsd.xpc", process: "appstorecomponentsd", migbypass: false) { proc in
-                            guard let proc else {
-                                mgr.logmsg("rc init failed")
-                                mgr.eu2running = false
-                                return
-                            }
-                            mgr.logmsg("rc init succeeded!")
-                            euenabler_override_country_code(proc) { progress in
-                                DispatchQueue.main.async {
-                                    self.mgr.eu2progress = progress
+                            // fix unable to load app info (second daemon after first releases the RC session)
+                            mgr.rcinitDaemon(serviceName: "com.apple.appstorecomponentsd.xpc", process: "appstorecomponentsd", migbypass: false) { proc in
+                                guard let proc else {
+                                    mgr.logmsg("rc init failed")
+                                    DispatchQueue.main.async {
+                                        mgr.eu2running = false
+                                    }
+                                    return
                                 }
-                            }
-                            proc.destroy()
-                            DispatchQueue.main.async {
-                                mgr.eu2running = false
+                                mgr.logmsg("rc init succeeded!")
+                                euenabler_override_country_code(proc) { progress in
+                                    DispatchQueue.main.async {
+                                        self.mgr.eu2progress = progress
+                                    }
+                                }
+                                proc.destroy()
+                                DispatchQueue.main.async {
+                                    mgr.eu2running = false
+                                }
                             }
                         }
                     } label: {
@@ -370,7 +376,7 @@ struct RemoteView: View {
                 Toggle("MIG filter bypass", isOn: $customMigBypass)
 
                 Button {
-                    run("Custom RemoteCall \(customProcessName):\(customFunctionName)") { _ in
+                    run("Custom RemoteCall \(customProcessName):\(customFunctionName)") { pinnedProc in
                         let process = customProcessName.trimmingCharacters(in: .whitespacesAndNewlines)
                         let function = customFunctionName.trimmingCharacters(in: .whitespacesAndNewlines)
                         guard !process.isEmpty else { return "custom: missing process name" }
@@ -393,10 +399,25 @@ struct RemoteView: View {
                             return "custom: failed to resolve \(function)"
                         }
 
-                        guard let proc = RemoteCall(process: process, useMigFilterBypass: customMigBypass) else {
-                            return "custom: RemoteCall init failed for \(process)"
+                        let lower = process.lowercased()
+                        // run() already holds the SpringBoard RC session — never attach a second
+                        // RemoteCall to SpringBoard/YouTube (dual exception ports / UAF on teardown).
+                        if lower.contains("youtube") {
+                            return "custom: refuse YouTube while SpringBoard session is pinned; use YouTube helpers"
                         }
-                        defer { proc.destroy() }
+                        let proc: RemoteCall
+                        let ownsProc: Bool
+                        if lower == "springboard" {
+                            proc = pinnedProc
+                            ownsProc = false
+                        } else {
+                            guard let created = RemoteCall(process: process, useMigFilterBypass: customMigBypass) else {
+                                return "custom: RemoteCall init failed for \(process)"
+                            }
+                            proc = created
+                            ownsProc = true
+                        }
+                        defer { if ownsProc { proc.destroy() } }
 
                         var argsCopy = args
                         let ret = function.withCString { (cName: UnsafePointer<CChar>) -> UInt64 in
