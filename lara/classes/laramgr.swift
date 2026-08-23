@@ -568,9 +568,11 @@ final class laramgr: ObservableObject {
         defer { restoreImmutableFlagsIfNeeded(clearedFlags) }
         let clearPrefix = clearError.map { "\($0), " } ?? ""
 
-        let sbx = sbxready ? sbxoverwrite(path: target, data: data) : (false, "sbx not ready")
-        let result = (sbx.ok, clearPrefix + sbx.message)
-        if result.0 {
+        let sbx: (ok: Bool, message: String) = sbxready
+            ? sbxoverwrite(path: target, data: data)
+            : (ok: false, message: "sbx not ready")
+        let result: (ok: Bool, message: String) = (ok: sbx.ok, message: clearPrefix + sbx.message)
+        if result.ok {
             return result
         }
 
@@ -579,11 +581,13 @@ final class laramgr: ObservableObject {
         }
         
         guard vfsready else {
-            return (false, result.1 + ", vfs not ready")
+            return (ok: false, message: result.message + ", vfs not ready")
         }
         
         let ok = vfsoverwritewithdata(target: target, data: data)
-        return ok ? (true, "vfs overwrite ok") : (false, result.1 + ", vfs overwrite failed")
+        return ok
+            ? (ok: true, message: "vfs overwrite ok")
+            : (ok: false, message: result.message + ", vfs overwrite failed")
     }
     
     func vfszeropage(at path: String, dumb: Bool) -> Bool {
@@ -845,7 +849,7 @@ final class laramgr: ObservableObject {
             return false
         }
         defer { endRCRunning() }
-        if let existing = ytProc {
+        if ytProc != nil {
             return true
         }
         let proc = RemoteCall(process: "youtube", useMigFilterBypass: false)
