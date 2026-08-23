@@ -612,7 +612,7 @@ struct santanderdirview: View {
         guard let clipitem = clip.item else { return }
 
         if writevfs && !entry.isdir && !clipitem.isdir {
-            let ok = laramgr.shared.vfsoverwritefromlocalpath(target: entry.path, source: clipitem.path)
+            let ok = laramgr.shared.lara_overwritefile(target: entry.path, source: clipitem.path).ok
             if ok {
                 model.load(query: query.trimmingCharacters(in: .whitespacesAndNewlines))
             } else {

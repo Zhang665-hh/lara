@@ -107,7 +107,7 @@ struct CustomView: View {
         }
         isoverwriting = true
         DispatchQueue.global(qos: .userInitiated).async {
-            let ok = mgr.vfsoverwritefromlocalpath(target: target, source: srcpath)
+            let ok = mgr.lara_overwritefile(target: target, source: srcpath).ok
             DispatchQueue.main.async {
                 isoverwriting = false
                 ok ? mgr.logmsg("overwrite ok: \(target)") : mgr.logmsg("overwrite failed: \(target)")

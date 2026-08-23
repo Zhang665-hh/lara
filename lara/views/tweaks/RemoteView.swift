@@ -400,24 +400,12 @@ struct RemoteView: View {
                         }
 
                         let lower = process.lowercased()
-                        // run() already holds the SpringBoard RC session — never attach a second
-                        // RemoteCall to SpringBoard/YouTube (dual exception ports / UAF on teardown).
-                        if lower.contains("youtube") {
-                            return "custom: refuse YouTube while SpringBoard session is pinned; use YouTube helpers"
+                        // run() already holds the SpringBoard RC session — never nest a second
+                        // RemoteCall onto any process (dual exception ports / UAF on teardown).
+                        guard lower == "springboard" else {
+                            return "custom: refuse non-SpringBoard target while SpringBoard session is pinned (got \(process))"
                         }
-                        let proc: RemoteCall
-                        let ownsProc: Bool
-                        if lower == "springboard" {
-                            proc = pinnedProc
-                            ownsProc = false
-                        } else {
-                            guard let created = RemoteCall(process: process, useMigFilterBypass: customMigBypass) else {
-                                return "custom: RemoteCall init failed for \(process)"
-                            }
-                            proc = created
-                            ownsProc = true
-                        }
-                        defer { if ownsProc { proc.destroy() } }
+                        let proc = pinnedProc
 
                         var argsCopy = args
                         let ret = function.withCString { (cName: UnsafePointer<CChar>) -> UInt64 in

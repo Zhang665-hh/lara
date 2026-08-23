@@ -35,6 +35,7 @@ enum styletarget: String, CaseIterable {
 struct FontPicker: View {
     @ObservedObject var mgr: laramgr
     @State private var showimporter = false
+    @State private var isapplying = false
     @State private var customfonts: [importedfont] = load()
     @StateObject private var repostore = fontrepostore()
     @State private var showrepomgr = false
@@ -100,6 +101,7 @@ struct FontPicker: View {
                     if !customfonts.isEmpty {
                         ForEach(customfonts) { font in
                             Button {
+                                guard !isapplying else { return }
                                 if !FileManager.default.fileExists(atPath: font.path) {
                                     mgr.logmsg("custom font missing: \(font.name)")
                                     customfonts.removeAll { $0.name == font.name }
@@ -110,11 +112,20 @@ struct FontPicker: View {
                                     mgr.logmsg("font overwrite refused: \(font.name) size != target (exact size required)")
                                     return
                                 }
-                                let result = mgr.lara_overwritefile(target: selectedTarget.path, source: font.path)
-                                if result.ok {
-                                    mgr.logmsg("font changed to \(font.name)")
-                                } else {
-                                    mgr.logmsg("failed to change font: \(result.message)")
+                                isapplying = true
+                                let target = selectedTarget.path
+                                let source = font.path
+                                let name = font.name
+                                DispatchQueue.global(qos: .userInitiated).async {
+                                    let result = mgr.lara_overwritefile(target: target, source: source)
+                                    DispatchQueue.main.async {
+                                        isapplying = false
+                                        if result.ok {
+                                            mgr.logmsg("font changed to \(name)")
+                                        } else {
+                                            mgr.logmsg("failed to change font: \(result.message)")
+                                        }
+                                    }
                                 }
                             } label: {
                                 Text(font.name)
@@ -333,6 +344,10 @@ struct repofontrow: View {
 
         Button {
             if iddownloaded, let localurl {
+                guard !mgr.fileopinprogress else {
+                    mgr.logmsg("font overwrite refused: file op already in progress")
+                    return
+                }
                 guard fontSizesEqual(target: laramgr.fontpath, source: localurl.path) else {
                     mgr.logmsg("font overwrite refused: \(font.name) size != system font (exact size required)")
                     return
@@ -380,6 +395,10 @@ private struct repoemojirow: View {
             		mgr.logmsg("emoji font must be .ttc, got .\(localurl.pathExtension)")
             		return
         		}
+                guard !mgr.fileopinprogress else {
+                    mgr.logmsg("emoji overwrite refused: file op already in progress")
+                    return
+                }
                 guard fontSizesEqual(target: emojipath, source: localurl.path) else {
                     mgr.logmsg("emoji overwrite refused: \(emoji.name) size != AppleColorEmoji (exact size required)")
                     return

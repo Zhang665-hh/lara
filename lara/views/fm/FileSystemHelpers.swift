@@ -345,38 +345,11 @@ enum santanderfs {
     }
 
     static func writefile(path: String, data: Data, readsbx: Bool, writevfs: Bool) -> Bool {
-        if writevfs {
-            // VFS overwrite cannot grow files. Prefer direct write when content expands.
-            if let attrs = try? FileManager.default.attributesOfItem(atPath: path),
-               let size = attrs[.size] as? NSNumber,
-               data.count > size.intValue {
-                do {
-                    let cleared = clearImmutableIfPossible(atPath: path)
-                    defer { restoreImmutableIfNeeded(cleared) }
-                    try data.write(to: URL(fileURLWithPath: path), options: .atomic)
-                    return true
-                } catch {
-                    return false
-                }
-            }
-            // Never zero-pad a shrink through VFS — that silently corrupts the file.
-            if let attrs = try? FileManager.default.attributesOfItem(atPath: path),
-               let size = attrs[.size] as? NSNumber,
-               data.count < size.intValue {
-                return false
-            }
-            if data.isEmpty { return false }
-            return laramgr.shared.vfsoverwritewithdata(target: path, data: data)
-        }
-        guard readsbx else { return false }
-        do {
-            let cleared = clearImmutableIfPossible(atPath: path)
-            defer { restoreImmutableIfNeeded(cleared) }
-            try data.write(to: URL(fileURLWithPath: path), options: .atomic)
-            return true
-        } catch {
-            return false
-        }
+        guard !data.isEmpty else { return false }
+        guard writevfs || readsbx else { return false }
+        // Shared overwrite gate: file-op lock, empty refuse, iOS16 immutable restore,
+        // SBX rename (size-changing) then same-size VFS — never a raw Data.write race.
+        return laramgr.shared.lara_overwritefile(target: path, data: data).ok
     }
 
     static func readdata(path: String, readsbx: Bool, max: Int) -> Data? {

@@ -459,14 +459,19 @@ final class laramgr: ObservableObject {
     /// Recursive lock: same-thread VFS nesting is allowed; concurrent top-level callers are refused.
     private let fileOpLock = NSRecursiveLock()
 
-    /// Publish `fileopinprogress` from a fresh depth read so overlapping begin/end async
-    /// publishes cannot leave the UI stuck idle while an op is still held.
+    /// Publish `fileopinprogress` without blocking main on a held overwrite lock.
+    /// If the lock is busy, report busy=true (conservative); otherwise read depth.
     private func scheduleFileOpProgressPublish() {
         let apply: () -> Void = { [weak self] in
             guard let self else { return }
-            self.fileOpLock.lock()
-            let busy = self.fileOpDepth > 0
-            self.fileOpLock.unlock()
+            let busy: Bool
+            if self.fileOpLock.try() {
+                busy = self.fileOpDepth > 0
+                self.fileOpLock.unlock()
+            } else {
+                // Another thread holds an overwrite — don't stall UI waiting for it.
+                busy = true
+            }
             self.fileopinprogress = busy
         }
         if Thread.isMainThread {
