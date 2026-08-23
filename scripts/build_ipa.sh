@@ -25,7 +25,9 @@ xcodebuild \
   SWIFT_TREAT_WARNINGS_AS_ERRORS=NO \
   GCC_TREAT_WARNINGS_AS_ERRORS=NO \
   archive \
-  -archivePath "$PWD/build/lara.xcarchive" 2>&1 | tee "$PWD/build/xcodebuild.log" | xcpretty
+  -archivePath "$PWD/build/lara.xcarchive" 2>&1 | tee "$PWD/build/xcodebuild.log" | {
+    if command -v xcpretty >/dev/null 2>&1; then xcpretty; else cat; fi
+  }
 EXIT_CODE=${PIPESTATUS[0]}
 set -e
 

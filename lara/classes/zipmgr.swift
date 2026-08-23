@@ -140,6 +140,14 @@ public class ZipArchive {
     public subscript(path: String) -> ZipEntry? { entryMap[path] }
 
     public func extract(_ entry: ZipEntry) throws -> Data {
+        // Cap decompressed entry size to mitigate zip bombs during theme import.
+        let maxUncompressedEntry: UInt64 = 64 * 1024 * 1024
+        guard entry.uncompressedSize <= maxUncompressedEntry else {
+            error = "(zip) entry too large (\(entry.uncompressedSize) bytes)"
+            mgr.logmsg("\(error)")
+            throw ZipError.corruptArchive("\(error)")
+        }
+
         let end = entry.dataOffset + entry.compressedSize
         guard entry.dataOffset < UInt64(data.count),
               end <= data.count else {

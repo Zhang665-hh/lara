@@ -727,11 +727,21 @@ final class IconThemeManager: ObservableObject {
             unzip_logmsg("entry: \(entry.path)")
 
             let normalizedPath = entry.path.replacingOccurrences(of: "\\", with: "/")
-            let outputURL = destination.appendingPathComponent(normalizedPath)
+            // Reject absolute paths and empty names before joining.
+            guard !normalizedPath.isEmpty,
+                  !normalizedPath.hasPrefix("/"),
+                  !normalizedPath.hasPrefix("~") else {
+                unzip_logmsg("skip unsafe path: \(normalizedPath)")
+                continue
+            }
+            let outputURL = destination.appendingPathComponent(normalizedPath).standardizedFileURL
+            let destRoot = destination.standardizedFileURL.path
+            let outPath = outputURL.path
 
-            unzip_logmsg("output: \(outputURL.path)")
+            unzip_logmsg("output: \(outPath)")
 
-            guard !normalizedPath.contains("..") else {
+            // Ensure resolved path stays under destination (blocks .. and symlink escapes).
+            guard outPath == destRoot || outPath.hasPrefix(destRoot + "/") else {
                 unzip_logmsg("skip path traversal: \(normalizedPath)")
                 continue
             }
