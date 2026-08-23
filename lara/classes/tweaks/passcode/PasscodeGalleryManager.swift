@@ -65,15 +65,29 @@ final class PasscodeGalleryManager: ObservableObject {
     var isLoading: Bool { repos.contains { $0.isLoading } }
     var loadError: String? { repos.first { $0.error != nil }?.error }
 
+    
+    /// Require HTTPS and pin downloads to the repo host (or GitHub raw CDN).
+    private func isAllowedThemeHost(_ remote: URL, repoBase: URL) -> Bool {
+        guard remote.scheme?.lowercased() == "https", let remoteHost = remote.host?.lowercased() else { return false }
+        if let repoHost = repoBase.host?.lowercased(), remoteHost == repoHost { return true }
+        return remoteHost == "raw.githubusercontent.com" || remoteHost.hasSuffix(".githubusercontent.com")
+    }
+
     func previewURL(for theme: PasscodeGalleryTheme) -> URL? {
         guard let repoData = repos.first(where: { $0.data?.themes.contains(where: { $0.id == theme.id }) == true })?.data else { return nil }
-        if theme.preview.hasPrefix("http") { return URL(string: theme.preview) }
+        if theme.preview.hasPrefix("http") {
+            guard let abs = URL(string: theme.preview), isAllowedThemeHost(abs, repoBase: repoData.baseURL) else { return nil }
+            return abs
+        }
         return repoData.baseURL.appendingPathComponent(theme.preview)
     }
 
     func downloadURL(for theme: PasscodeGalleryTheme) -> URL? {
         guard let repoData = repos.first(where: { $0.data?.themes.contains(where: { $0.id == theme.id }) == true })?.data else { return nil }
-        if theme.url.hasPrefix("http") { return URL(string: theme.url) }
+        if theme.url.hasPrefix("http") {
+            guard let abs = URL(string: theme.url), isAllowedThemeHost(abs, repoBase: repoData.baseURL) else { return nil }
+            return abs
+        }
         return repoData.baseURL.appendingPathComponent(theme.url)
     }
 
@@ -127,6 +141,14 @@ final class PasscodeGalleryManager: ObservableObject {
         downloading.insert(theme.id)
         defer { downloading.remove(theme.id) }
         let (tempURL, response) = try await URLSession.shared.download(from: fileURL)
+        // URLSession follows redirects — reject if the final URL left the allowlist.
+        if let finalURL = response.url {
+            guard let repoData = repos.first(where: { $0.data?.themes.contains(where: { $0.id == theme.id }) == true })?.data,
+                  isAllowedThemeHost(finalURL, repoBase: repoData.baseURL) else {
+                try? FileManager.default.removeItem(at: tempURL)
+                throw URLError(.unsupportedURL)
+            }
+        }
         if let http = response as? HTTPURLResponse, !(200...299).contains(http.statusCode) {
             throw URLError(.badServerResponse)
         }
@@ -160,6 +182,14 @@ final class PasscodeGalleryManager: ObservableObject {
         var req = URLRequest(url: url)
         if forceRefresh { req.cachePolicy = .reloadIgnoringLocalCacheData }
         let (data, response) = try await URLSession.shared.data(for: req)
+        // Pin final host after redirects (user-added repos can open-redirect).
+        if let finalURL = response.url {
+            guard finalURL.scheme?.lowercased() == "https" else { throw URLError(.unsupportedURL) }
+            let host = (finalURL.host ?? "").lowercased()
+            let repoHost = (url.host ?? "").lowercased()
+            let ok = host == repoHost || host == "raw.githubusercontent.com" || host.hasSuffix(".githubusercontent.com")
+            guard ok else { throw URLError(.unsupportedURL) }
+        }
         if let http = response as? HTTPURLResponse, !(200...299).contains(http.statusCode) {
             throw URLError(.badServerResponse)
         }

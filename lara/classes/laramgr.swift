@@ -386,12 +386,19 @@ final class laramgr: ObservableObject {
             }
             return true
         }
-        close(fd)
-
         if !wroteAll {
+            close(fd)
             unlink(tmp)
             return (false, "\(prefix)sbx temp write failed: errno=\(errno) \(String(cString: strerror(errno)))")
         }
+        // Durable commit before rename — matches decrypt/ST temp+rename policy.
+        if fsync(fd) != 0 {
+            let e = errno
+            close(fd)
+            unlink(tmp)
+            return (false, "\(prefix)sbx temp fsync failed: errno=\(e) \(String(cString: strerror(e)))")
+        }
+        close(fd)
 
         if rename(tmp, path) == 0 {
             return (true, "ok (\(total) bytes)")
@@ -767,7 +774,8 @@ final class laramgr: ObservableObject {
     }
     
     func rcinitDaemon(serviceName: String, framework: String? = nil, process: String, migbypass: Bool = false, completion: ((RemoteCall?) -> Void)? = nil) {
-        guard dsready, rcready, let sbProc else {
+        // Match rcinit/rcdestroy: refuse overlapping daemon wakes / stable calls.
+        guard dsready, rcready, !rcrunning, let sbProc else {
             completion?(nil)
             return
         }
@@ -785,6 +793,7 @@ final class laramgr: ObservableObject {
             
             DispatchQueue.main.async {
                 guard let self = self else {
+                    // Keep session consistent if the singleton somehow went away mid-init.
                     completion?(nil)
                     return
                 }

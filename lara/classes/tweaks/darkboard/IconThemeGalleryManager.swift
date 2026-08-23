@@ -63,6 +63,14 @@ final class IconThemeGalleryManager: ObservableObject {
             let baseURL = try await fetchServerBaseURL(forceRefresh: forceRefresh)
             let url = baseURL.appendingPathComponent("icon-themes.json")
             let (data, response) = try await session.data(from: url)
+            // URLSession follows redirects — keep catalog traffic on the gallery host.
+            if let finalURL = response.url {
+                guard finalURL.scheme?.lowercased() == "https",
+                      let finalHost = finalURL.host, let baseHost = baseURL.host,
+                      finalHost.caseInsensitiveCompare(baseHost) == .orderedSame else {
+                    throw NSError(domain: "IconThemeGallery", code: 7, userInfo: [NSLocalizedDescriptionKey: "Theme catalog redirected off the gallery host."])
+                }
+            }
             guard data.count <= 2 * 1024 * 1024 else {
                 throw NSError(domain: "IconThemeGallery", code: 6, userInfo: [NSLocalizedDescriptionKey: "Theme catalog too large."])
             }
@@ -120,6 +128,15 @@ final class IconThemeGalleryManager: ObservableObject {
 
         let remoteURL = try await absoluteURL(for: theme.url)
         let (temporaryURL, response) = try await session.download(from: remoteURL)
+        // URLSession follows redirects — keep the final host on the gallery base.
+        if let finalURL = response.url, let baseURL = serverBaseURL {
+            guard finalURL.scheme?.lowercased() == "https",
+                  let finalHost = finalURL.host, let baseHost = baseURL.host,
+                  finalHost.caseInsensitiveCompare(baseHost) == .orderedSame else {
+                try? FileManager.default.removeItem(at: temporaryURL)
+                throw NSError(domain: "IconThemeGallery", code: 7, userInfo: [NSLocalizedDescriptionKey: "Download redirected off the gallery host."])
+            }
+        }
         guard let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode == 200 else {
             throw NSError(domain: "IconThemeGallery", code: 2, userInfo: [NSLocalizedDescriptionKey: "Could not download \(theme.name)."])
         }
@@ -161,6 +178,13 @@ final class IconThemeGalleryManager: ObservableObject {
             throw NSError(domain: "IconThemeGallery", code: 3, userInfo: [NSLocalizedDescriptionKey: "Invalid gallery commits URL."])
         }
         let (data, response) = try await session.data(from: commitURL)
+        // URLSession follows redirects — pin the commits API to api.github.com.
+        if let finalURL = response.url {
+            guard finalURL.scheme?.lowercased() == "https",
+                  (finalURL.host ?? "").lowercased() == "api.github.com" else {
+                throw NSError(domain: "IconThemeGallery", code: 7, userInfo: [NSLocalizedDescriptionKey: "Gallery metadata redirected off api.github.com."])
+            }
+        }
         guard data.count <= 1024 * 1024 else {
             throw NSError(domain: "IconThemeGallery", code: 6, userInfo: [NSLocalizedDescriptionKey: "Commit metadata too large."])
         }

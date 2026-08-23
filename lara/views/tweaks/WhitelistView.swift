@@ -170,12 +170,18 @@ struct WhitelistView: View {
             }
             return true
         }
-        close(fd)
-
         if !ok {
+            close(fd)
             unlink(tmp)
             return vfsfallback(path: path, data: data, reason: "temp write failed: errno=\(errno) \(String(cString: strerror(errno)))")
         }
+        if fsync(fd) != 0 {
+            let e = errno
+            close(fd)
+            unlink(tmp)
+            return vfsfallback(path: path, data: data, reason: "temp fsync failed: errno=\(e) \(String(cString: strerror(e)))")
+        }
+        close(fd)
 
         if rename(tmp, path) == 0 {
             return "ok (\(written) bytes)"
