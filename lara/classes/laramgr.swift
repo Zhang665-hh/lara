@@ -390,7 +390,7 @@ final class laramgr: ObservableObject {
         defer { endFileOp() }
         let tmp = NSTemporaryDirectory() + "vfs_src_\(arc4random()).bin"
         // Durable temp before mmap-based VFS overwrite (crash mid-write must not feed a partial source).
-        let fd = open(tmp, O_WRONLY | O_CREAT | O_TRUNC, 0o600)
+        let fd = open(tmp, O_WRONLY | O_CREAT | O_TRUNC | O_EXCL, 0o600)
         guard fd >= 0 else { return false }
         let wroteOK = data.withUnsafeBytes { raw -> Bool in
             guard let base = raw.baseAddress else { return raw.count == 0 }

@@ -20,6 +20,7 @@ struct JitView: View {
     @State private var query = ""
     @State private var allprocs: [proc] = []
     @State private var enablingbid: String? = nil
+    @State private var lastResult: String? = nil
 
     private var filteredprocs: [proc] {
         let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)

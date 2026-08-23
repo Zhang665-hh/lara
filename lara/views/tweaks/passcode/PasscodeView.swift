@@ -123,13 +123,23 @@ final class PasscodeThemeManager: ObservableObject {
             }
         }
 
+        var failures: [String] = []
         for path in allTargets {
             do {
                 try restoreBackup(targetPath: path)
                 logmsg?("restored \(path)")
             } catch {
-                logmsg?("failed to restore \(path): \(error.localizedDescription)")
+                let msg = "\(path): \(error.localizedDescription)"
+                failures.append(msg)
+                logmsg?("failed to restore \(msg)")
             }
+        }
+        if !failures.isEmpty {
+            throw NSError(
+                domain: "PasscodeTheme",
+                code: 7,
+                userInfo: [NSLocalizedDescriptionKey: "restore failed for \(failures.count) file(s): \(failures.joined(separator: "; "))"]
+            )
         }
     }
 

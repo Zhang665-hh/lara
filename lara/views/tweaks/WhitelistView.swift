@@ -119,19 +119,34 @@ struct WhitelistView: View {
             return
         }
 
-        var failures: [String] = []
-
+        // Stage backups first; roll back on any failure so identity blacklists stay consistent.
+        var staged: [(path: String, name: String, backup: Data)] = []
         for f in files {
-            let result = mgr.lara_overwritefile(target: f.path, data: data)
-            if !result.ok {
-                failures.append("\(f.name): \(result.message)")
+            guard let backup = sbxread(path: f.path, maxSize: 8 * 1024 * 1024), !backup.isEmpty else {
+                status = "Failed to backup \(f.name) before patch"
+                return
             }
+            staged.append((f.path, f.name, backup))
         }
 
-        if failures.isEmpty {
-            status = "Patched all files!"
+        var applied: [(path: String, backup: Data)] = []
+        var failures: [String] = []
+        for item in staged {
+            let result = mgr.lara_overwritefile(target: item.path, data: data)
+            if result.ok {
+                applied.append((item.path, item.backup))
+            } else {
+                failures.append("\(item.name): \(result.message)")
+                break
+            }
+        }
+        if !failures.isEmpty {
+            for item in applied.reversed() {
+                _ = mgr.lara_overwritefile(target: item.path, data: item.backup)
+            }
+            status = "Failed to patch: \(failures.joined(separator: ", ")); rolled back"
         } else {
-            status = "Failed to patch: \(failures.joined(separator: ", "))"
+            status = "Patched all files!"
         }
 
         loadall()
@@ -155,7 +170,7 @@ struct WhitelistView: View {
         // write would leave Rejections/ban lists empty and VFS often cannot restore.
         let dir = (path as NSString).deletingLastPathComponent
         let tmp = (dir as NSString).appendingPathComponent(".lara_whitelist_\(UUID().uuidString).tmp")
-        let fd = open(tmp, O_WRONLY | O_CREAT | O_TRUNC, 0o644)
+        let fd = open(tmp, O_WRONLY | O_CREAT | O_TRUNC | O_EXCL, 0o644)
         if fd == -1 {
             return vfsfallback(path: path, data: data, reason: "temp open failed: errno=\(errno) \(String(cString: strerror(errno)))")
         }

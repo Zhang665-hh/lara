@@ -134,6 +134,8 @@ struct LaraThemedApp: Identifiable, Hashable {
 
     func setPNGIcons(icon: LaraThemedIcon) throws {
         let fm = FileManager.default
+        var appliedBackups: [(path: String, data: Data)] = []
+        do {
         for iconName in pngIconPaths {
             let iconURL = bundleURL.appendingPathComponent(iconName)
             guard fm.fileExists(atPath: iconURL.path) else { continue }
@@ -178,6 +180,8 @@ struct LaraThemedApp: Identifiable, Hashable {
             }
 
             guard let cachedIcon else { continue }
+
+            let originalData = try Data(contentsOf: iconURL)
             
             let chown1 = SantanderChown.chown( path: iconURL.path, uid: 501, gid: 501)
             if(!chown1) {
@@ -190,11 +194,20 @@ struct LaraThemedApp: Identifiable, Hashable {
             if !overwrite.ok {
                 throw NSError(domain: "IconThemer", code: 6, userInfo: [NSLocalizedDescriptionKey: "\(bundleIdentifier): \(overwrite.message)"])
             }
+            appliedBackups.append((iconURL.path, originalData))
             
             let chown2 = SantanderChown.chown( path: iconURL.path, uid: 33, gid: 33)
             if(!chown2) {
                 throw NSError(domain: "IconThemer", code: 6, userInfo: [NSLocalizedDescriptionKey: "\(bundleIdentifier): 2nd chown failed"])
             }
+        }
+        } catch {
+            for item in appliedBackups.reversed() {
+                _ = SantanderChown.chown(path: item.path, uid: 501, gid: 501)
+                _ = laramgr.shared.lara_overwritefile(target: item.path, data: item.data)
+                _ = SantanderChown.chown(path: item.path, uid: 33, gid: 33)
+            }
+            throw error
         }
     }
 }
