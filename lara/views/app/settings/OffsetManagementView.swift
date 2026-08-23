@@ -186,10 +186,12 @@ struct OffsetManagementView: View {
 
     private func applyoffs() {
         func hexparse(_ raw: String) -> String {
-            raw
+            let stripped = raw
                 .replacingOccurrences(of: "0x", with: "")
                 .replacingOccurrences(of: "0X", with: "")
                 .trimmingCharacters(in: .whitespacesAndNewlines)
+            // Drop non-hex characters so UInt64(..., radix: 16) does not silently fail on junk.
+            return stripped.filter { $0.isHexDigit }
         }
 
         func setoffs32(_ key: String, _ setter: (UInt32) -> Void) {
