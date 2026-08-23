@@ -16,6 +16,7 @@ struct LiquidGlassView: View {
     @EnvironmentObject private var mgr: laramgr
     
     @State private var gpCurrentDict: NSMutableDictionary = NSMutableDictionary()
+    @State private var isapplying = false
     @State private var gpLoaded: Bool = false
     @State private var trueBool: Bool = true
     
@@ -52,6 +53,7 @@ struct LiquidGlassView: View {
                 }
             }
             .navigationTitle("Liquid Glass")
+        .disabled(isapplying)
             .onAppear {
                 loadGPData()
             }
@@ -80,6 +82,9 @@ struct LiquidGlassView: View {
     
     // MARK: applying/reloading functions
     func applyLiquidGlass() {
+        guard !isapplying else { return }
+        isapplying = true
+        defer { isapplying = false }
         guard gpLoaded, gpCurrentDict.count > 0 else {
             Alertinator.shared.alert(title: "Failed to enable Liquid Glass Tweaks!", body: "Global Preferences were not loaded — refusing to overwrite with an empty plist.")
             return
@@ -99,6 +104,9 @@ struct LiquidGlassView: View {
     }
     
     func restoreLiquidGlass() {
+        guard !isapplying else { return }
+        isapplying = true
+        defer { isapplying = false }
         do {
             let docsDir = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
             let gpSavedURL = docsDir.appendingPathComponent("SavedGlobalPrefs.plist")

@@ -41,6 +41,7 @@ struct GestaltView: View {
     
     let mgr: laramgr
     @State private var mgCurrentDict: NSMutableDictionary = NSMutableDictionary()
+    @State private var isapplying = false
     @State private var isGestaltVaild: Bool = false
     
     @State private var showgestaltwarn: Bool = false
@@ -336,6 +337,7 @@ struct GestaltView: View {
                 }
             }
             .navigationTitle("MobileGestalt")
+        .disabled(isapplying)
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
                     Button(action: {
@@ -425,6 +427,9 @@ struct GestaltView: View {
     }
     
     private func applyGestalt() {
+        guard !isapplying else { return }
+        isapplying = true
+        defer { isapplying = false }
         do {
             // first, update the dictionary with some specific properties.
             let cacheExtra = mgCurrentDict["CacheExtra"] as? NSMutableDictionary ?? NSMutableDictionary()
@@ -459,6 +464,9 @@ struct GestaltView: View {
     }
     
     private func restoreGestalt() {
+        guard !isapplying else { return }
+        isapplying = true
+        defer { isapplying = false }
         do {
             let docsDir = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
             let mgSavedURL = docsDir.appendingPathComponent("SavedGestalt.plist")

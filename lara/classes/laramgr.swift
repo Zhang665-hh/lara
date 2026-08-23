@@ -1006,6 +1006,17 @@ final class laramgr: ObservableObject {
     }
     
     #if !DISABLE_REMOTECALL
+
+    /// Hold the RC session lock around arbitrary RemoteCall work (ST/OTA/launchd helpers).
+    /// Returns false if the session is already busy.
+    @discardableResult
+    func withRCRunning(_ body: () -> Void) -> Bool {
+        guard beginRCRunning() else { return false }
+        defer { endRCRunning() }
+        body()
+        return true
+    }
+
     func rcinit(process: String, migbypass: Bool = false, completion: ((Bool) -> Void)? = nil) {
         guard dsready, !rcready else {
             completion?(false)
@@ -1091,8 +1102,10 @@ final class laramgr: ObservableObject {
                         self.logmsg("remote call init failed on \(process)")
                     }
                 }
-                self.endRCRunning()
+                // Keep the RC session locked through the caller's daemon work so EU/ST-style
+                // completions cannot race another beginRCRunning / nested RemoteCall.
                 completion?(proc)
+                self.endRCRunning()
             }
         }
     }

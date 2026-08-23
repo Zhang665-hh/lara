@@ -298,7 +298,15 @@ struct DecryptView: View {
             var frameworkFailures: [String] = []
             if stat(srcFrameworks, &srcFwSt) == 0 {
                 let frameworksPath = destAppPath + "/Frameworks"
-                let frameworks = (try? fm.contentsOfDirectory(atPath: frameworksPath)) ?? []
+                // Fail closed: source has Frameworks but dest list/copy failed → refuse "successful" IPA.
+                guard let frameworks = try? fm.contentsOfDirectory(atPath: frameworksPath) else {
+                    DispatchQueue.main.async {
+                        decryptingbid = nil
+                        errormsg = "Failed to list Frameworks in decrypted copy"
+                        laramgr.shared.logmsg("(decrypt) Frameworks list failed after copy")
+                    }
+                    return
+                }
                 for fw in frameworks where fw.hasSuffix(".framework") {
                     let fwName = (fw as NSString).deletingPathExtension
                     let fwBinary = frameworksPath + "/" + fw + "/" + fwName
