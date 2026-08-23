@@ -447,18 +447,40 @@ struct CardView: View {
         }
     }
 
+
+    private func cardbackuppath(for card: carditem) -> String {
+        let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("CardBackups", isDirectory: true)
+        try? FileManager.default.createDirectory(at: docs, withIntermediateDirectories: true)
+        let safe = card.imgpath
+            .replacingOccurrences(of: "/", with: "_")
+            .replacingOccurrences(of: ":", with: "_")
+        return docs.appendingPathComponent(safe + ".backup").path
+    }
+
+    private func resolvecardbackup(for card: carditem) -> String? {
+        let preferred = cardbackuppath(for: card)
+        if FileManager.default.fileExists(atPath: preferred) { return preferred }
+        let legacy = card.imgpath + ".backup"
+        if FileManager.default.fileExists(atPath: legacy) { return legacy }
+        return nil
+    }
+
     private func backupifneeded(card: carditem) {
-        let backuppath = card.imgpath + ".backup"
-        let fm = FileManager.default
-        if fm.fileExists(atPath: backuppath) { return }
+        if resolvecardbackup(for: card) != nil { return }
+        let backuppath = cardbackuppath(for: card)
         if let data = readprefersbx(path: card.imgpath, maxsize: 16 * 1024 * 1024) {
-            _ = writeprefersbx(path: backuppath, data: data)
+            // Prefer Documents — VFS cannot create sibling .backup next to Wallet passes.
+            do {
+                try data.write(to: URL(fileURLWithPath: backuppath), options: .atomic)
+            } catch {
+                _ = writeprefersbx(path: card.imgpath + ".backup", data: data)
+            }
         }
     }
 
     private func restoreimg(card: carditem) {
-        let backuppath = card.imgpath + ".backup"
-        guard FileManager.default.fileExists(atPath: backuppath) else {
+        guard let backuppath = resolvecardbackup(for: card) else {
             status = "No backup found"
             return
         }

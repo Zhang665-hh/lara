@@ -98,8 +98,11 @@ struct LiquidGlassView: View {
             
             if FileManager.default.fileExists(atPath: gpSavedURL.path) {
                 let restored = try NSMutableDictionary(contentsOf: gpSavedURL, error: ())
-                _ = try verifyPlist(restored, targetPath: gpCurrentPath)
+                let gpData = try verifyPlist(restored, targetPath: gpCurrentPath)
+                let result = mgr.lara_overwritefile(target: gpCurrentPath, data: gpData)
+                guard result.ok else { throw "Overwrite failed: \(result.message)" }
                 gpCurrentDict = restored
+                Alertinator.shared.alert(title: "Restored Liquid Glass!", body: "Reboot your device to see any changes")
             } else {
                 throw "No Global Prefs file found!"
             }

@@ -458,8 +458,11 @@ struct GestaltView: View {
             
             if FileManager.default.fileExists(atPath: mgSavedURL.path) {
                 let restored = try loadMutablePlistDictionary(from: mgSavedURL)
-                _ = try verifyPlist(restored, targetPath: mgCurrentPath)
+                let mgData = try verifyPlist(restored, targetPath: mgCurrentPath)
+                let result = mgr.lara_overwritefile(target: mgCurrentPath, data: mgData, fallback_vfs: false)
+                guard result.ok else { throw "Overwrite failed: \(result.message)" }
                 mgCurrentDict = restored
+                Alertinator.shared.alert(title: "Restored MobileGestalt!", body: "Respring to see any changes", actionLabel: "Respring", action: { mgr.respring() })
             } else {
                 throw "No MobileGestalt file found!"
             }

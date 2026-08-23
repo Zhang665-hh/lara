@@ -219,8 +219,9 @@ struct RemoteView: View {
                                 return
                             }
                             mgr.logmsg("rc init succeeded!")
-                            mgr.eligibilitystate = euenabler_overwrite_eligibility(proc) == 0
-                            mgr.logmsg("overwrite_eligibility() returned: \(mgr.eligibilitystate! ? "success" : "failure")")
+                            let eligibilityOK = euenabler_overwrite_eligibility(proc) == 0
+                            mgr.eligibilitystate = eligibilityOK
+                            mgr.logmsg("overwrite_eligibility() returned: \(eligibilityOK ? "success" : "failure")")
                             proc.destroy()
                         }
                     } label: {

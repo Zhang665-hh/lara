@@ -693,12 +693,13 @@ final class IconThemeManager: ObservableObject {
     }
 
     private func sanitizedThemeName(_ name: String) -> String {
-        let invalidCharacterSet = CharacterSet(charactersIn: "/:")
-            .union(.newlines)
-            .union(.illegalCharacters)
-            .union(.controlCharacters)
-        let cleaned = name.components(separatedBy: invalidCharacterSet).joined(separator: "_").trimmingCharacters(in: .whitespacesAndNewlines)
-        return cleaned.isEmpty ? "Imported Theme" : cleaned
+        let allowed = CharacterSet.alphanumerics.union(.init(charactersIn: "._- "))
+        let cleanedScalars = name.unicodeScalars.map { allowed.contains($0) ? Character($0) : "_" }
+        var cleaned = String(cleanedScalars).trimmingCharacters(in: .whitespacesAndNewlines)
+        while cleaned.contains("..") { cleaned = cleaned.replacingOccurrences(of: "..", with: "_") }
+        cleaned = cleaned.replacingOccurrences(of: "/", with: "_")
+        if cleaned.isEmpty || cleaned == "." || cleaned == ".." { return "Imported Theme" }
+        return cleaned
     }
 
     private func findIconBundlesDirectory(in root: URL) throws -> URL? {

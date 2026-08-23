@@ -12,6 +12,30 @@ import UniformTypeIdentifiers
 import Compression
 import Combine
 
+fileprivate func passcodeMatchFilenameToKey(_ filename: String) -> String? {
+
+        let lowercased = filename.lowercased()
+        // Prefer multi-digit-safe tokens; scan 9...0 so "-10-" cannot match as "-1-".
+        for i in (0...9).reversed() {
+            let s = String(i)
+            if lowercased.contains("other-2-\(s)--dark") ||
+                lowercased.contains("-\(s)-") ||
+                lowercased.contains("-\(s)@") ||
+                lowercased.contains("_\(s)_") ||
+                lowercased.contains("_\(s)@") ||
+                lowercased.hasSuffix("/\(s).png") ||
+                lowercased.hasSuffix("/\(s).jpg") ||
+                lowercased.hasSuffix("/\(s).jpeg") ||
+                lowercased.hasSuffix("\(s).png") ||
+                lowercased.hasSuffix("\(s).jpg") ||
+                lowercased.hasSuffix("\(s).jpeg") {
+                return s
+            }
+        }
+        
+        return nil
+    }
+
 private let passcodeThemeStorageRoot = URL(
     fileURLWithPath: "/var/mobile/.DO-NOT-DELETE-lara/PasscodeThemes",
     isDirectory: true
@@ -84,15 +108,8 @@ final class PasscodeThemeManager: ObservableObject {
         for case let file as String in enumerator {
             guard file.lowercased().hasSuffix(".png") else { continue }
             let fullPath = "\(basePath)/\(file)"
-            let lower = file.lowercased()
-            for i in 0...9 {
-                if lower.contains("other-2-\(i)--dark") ||
-                   lower.contains("-\(i)-") ||
-                   lower.contains("_\(i)_") ||
-                   lower.contains("_\(i)@") {
-                    allTargets.append(fullPath)
-                    break
-                }
+            if passcodeMatchFilenameToKey(file) != nil {
+                allTargets.append(fullPath)
             }
         }
 
@@ -386,26 +403,7 @@ struct PasscodeView: View {
     }
     
     func matchFilenameToKey(_ filename: String) -> String? {
-        let lowercased = filename.lowercased()
-        // Prefer multi-digit-safe tokens; scan 9...0 so "-10-" cannot match as "-1-".
-        for i in (0...9).reversed() {
-            let s = String(i)
-            if lowercased.contains("other-2-\(s)--dark") ||
-                lowercased.contains("-\(s)-") ||
-                lowercased.contains("-\(s)@") ||
-                lowercased.contains("_\(s)_") ||
-                lowercased.contains("_\(s)@") ||
-                lowercased.hasSuffix("/\(s).png") ||
-                lowercased.hasSuffix("/\(s).jpg") ||
-                lowercased.hasSuffix("/\(s).jpeg") ||
-                lowercased.hasSuffix("\(s).png") ||
-                lowercased.hasSuffix("\(s).jpg") ||
-                lowercased.hasSuffix("\(s).jpeg") {
-                return s
-            }
-        }
-        
-        return nil
+        passcodeMatchFilenameToKey(filename)
     }
     
     func applyTheme() {

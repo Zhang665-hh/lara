@@ -218,7 +218,8 @@ struct DecryptView: View {
             }
 
             DispatchQueue.global(qos: .userInitiated).asyncAfter(deadline: .now() + 2.5) {
-                launch_app(Bundle.main.bundleIdentifier!)
+                guard let selfId = Bundle.main.bundleIdentifier else { return }
+                launch_app(selfId)
                 usleep(500000)
 
                 if self.pendingdecrypt != nil {

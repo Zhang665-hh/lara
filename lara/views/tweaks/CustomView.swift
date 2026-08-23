@@ -72,6 +72,8 @@ struct CustomView: View {
         let fm = FileManager.default
         let tmpdir = URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
         let dest = tmpdir.appendingPathComponent("customwrite-\(UUID().uuidString)")
+        let scoped = url.startAccessingSecurityScopedResource()
+        defer { if scoped { url.stopAccessingSecurityScopedResource() } }
 
         do {
             if fm.fileExists(atPath: dest.path) {
