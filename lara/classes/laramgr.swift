@@ -360,9 +360,27 @@ final class laramgr: ObservableObject {
     func vfsoverwritewithdata(target: String, data: Data) -> Bool {
         guard vfsready else { return false }
         let tmp = NSTemporaryDirectory() + "vfs_src_\(arc4random()).bin"
-        do { try data.write(to: URL(fileURLWithPath: tmp)) } catch { return false }
+        // Durable temp before mmap-based VFS overwrite (crash mid-write must not feed a partial source).
+        let fd = open(tmp, O_WRONLY | O_CREAT | O_TRUNC, 0o600)
+        guard fd >= 0 else { return false }
+        let wroteOK = data.withUnsafeBytes { raw -> Bool in
+            guard let base = raw.baseAddress else { return raw.count == 0 }
+            var off = 0
+            while off < raw.count {
+                let n = write(fd, base.advanced(by: off), raw.count - off)
+                if n <= 0 { return false }
+                off += n
+            }
+            return true
+        }
+        if !wroteOK || fsync(fd) != 0 {
+            close(fd)
+            unlink(tmp)
+            return false
+        }
+        close(fd)
         let ok = vfsoverwritefromlocalpath(target: target, source: tmp)
-        try? FileManager.default.removeItem(atPath: tmp)
+        unlink(tmp)
         return ok
     }
     
@@ -420,6 +438,11 @@ final class laramgr: ObservableObject {
         guard FileManager.default.fileExists(atPath: source) else {
             return (false, "source file not found: \(source)")
         }
+        if fileopinprogress {
+            return (false, "file overwrite already in progress")
+        }
+        fileopinprogress = true
+        defer { fileopinprogress = false }
         
         let result: (ok: Bool, message: String)
         if sbxready {
@@ -460,6 +483,11 @@ final class laramgr: ObservableObject {
         guard !data.isEmpty else {
             return (false, "refusing to overwrite with empty data")
         }
+        if fileopinprogress {
+            return (false, "file overwrite already in progress")
+        }
+        fileopinprogress = true
+        defer { fileopinprogress = false }
         let result = sbxready ? sbxoverwrite(path: target, data: data) : (false, "sbx not ready")
         if result.0 {
             return result

@@ -305,7 +305,21 @@ public class ZipArchive {
                 lfhOff = UInt64(lfhOffset32)
             }
 
-            let isDir = path.hasSuffix("/") || ((data.scan(at: pos + 38) as UInt32 >> 4) & 1) != 0
+            let externalAttrs: UInt32 = data.scan(at: pos + 38)
+            // Unix mode lives in the high 16 bits of external file attributes.
+            let unixMode = (externalAttrs >> 16) & 0o170000
+            // Fail closed on symlinks (and other non-file/dir types) to avoid zip-slip via link extract.
+            if unixMode == 0o120000 {
+                error = "(zip) symlink entry rejected: \(path)"
+                mgr.logmsg("\(error)")
+                throw ZipError.corruptArchive("\(error)")
+            }
+            if unixMode != 0 && unixMode != 0o100000 && unixMode != 0o040000 {
+                error = "(zip) unsupported entry type rejected: \(path) mode=\(String(unixMode, radix: 8))"
+                mgr.logmsg("\(error)")
+                throw ZipError.corruptArchive("\(error)")
+            }
+            let isDir = path.hasSuffix("/") || unixMode == 0o040000 || ((externalAttrs >> 4) & 1) != 0
             let dataOff = try computeDataOffset(lfhOffset: lfhOff)
 
             entries.append(ZipEntry(
