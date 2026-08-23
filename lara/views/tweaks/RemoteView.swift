@@ -199,7 +199,10 @@ struct RemoteView: View {
                 }
                 .onChange(of: performanceHUD) { newValue in
                     mgr.withSpringBoardRemoteCall { proc in
-                        set_performance_hud(proc, Int32(newValue))
+                        let rc = set_performance_hud(proc, Int32(newValue))
+                        if rc != 0 {
+                            mgr.logmsg("(rc) set_performance_hud failed (\(rc))")
+                        }
                     }
                 }
                 .onAppear {
@@ -267,7 +270,12 @@ struct RemoteView: View {
                             mgr.logmsg("rc init succeeded!")
                             euenabler_override_country_code(proc) { progress in
                                 DispatchQueue.main.async {
-                                    self.mgr.eu1progress = progress
+                                    if progress < 0 {
+                                        self.mgr.eu1progress = 0
+                                        self.mgr.logmsg("(rc) EU country override failed")
+                                    } else {
+                                        self.mgr.eu1progress = progress
+                                    }
                                 }
                             }
                             proc.destroy()
@@ -287,7 +295,12 @@ struct RemoteView: View {
                                 mgr.logmsg("rc init succeeded!")
                                 euenabler_override_country_code(proc) { progress in
                                     DispatchQueue.main.async {
-                                        self.mgr.eu2progress = progress
+                                        if progress < 0 {
+                                            self.mgr.eu2progress = 0
+                                            self.mgr.logmsg("(rc) EU country override failed")
+                                        } else {
+                                            self.mgr.eu2progress = progress
+                                        }
                                     }
                                 }
                                 proc.destroy()
@@ -309,7 +322,7 @@ struct RemoteView: View {
                             } else {
                                 Text("Enable Spoof EU Region")
                                 Spacer()
-                                if mgr.eu1progress + mgr.eu2progress == 2 {
+                                if mgr.eu1progress == 1.0 && mgr.eu2progress == 1.0 {
                                     Image(systemName: "checkmark.circle")
                                         .foregroundColor(.green)
                                 } else if mgr.dsattempted && mgr.dsfailed {

@@ -62,7 +62,12 @@ private func clearImmutableForOverwriteIfNeeded(path: String) -> (cleared: Clear
 
 private func restoreImmutableFlagsIfNeeded(_ cleared: ClearedImmutableFlags?) {
     guard let cleared, !cleared.restore.isEmpty else { return }
-    try? FileManager.default.setAttributes(cleared.restore, ofItemAtPath: cleared.path)
+    do {
+        try FileManager.default.setAttributes(cleared.restore, ofItemAtPath: cleared.path)
+    } catch {
+        // Prefer noise over silent half-open mutable system files after a successful overwrite.
+        print("(lara) restore immutable failed for \(cleared.path): \(error.localizedDescription)")
+    }
 }
 
 final class laramgr: ObservableObject {

@@ -82,7 +82,11 @@ enum santanderfs {
 
     static func restoreImmutableIfNeeded(_ cleared: ClearedImmutable?) {
         guard let cleared, !cleared.restore.isEmpty else { return }
-        try? FileManager.default.setAttributes(cleared.restore, ofItemAtPath: cleared.path)
+        do {
+            try FileManager.default.setAttributes(cleared.restore, ofItemAtPath: cleared.path)
+        } catch {
+            print("(fm) restore immutable failed for \(cleared.path): \(error.localizedDescription)")
+        }
     }
 
     static func removeItemClearingImmutable(atPath path: String) throws {
