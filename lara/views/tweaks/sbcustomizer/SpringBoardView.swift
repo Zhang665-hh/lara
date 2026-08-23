@@ -209,6 +209,7 @@ struct SpringBoardView: View {
                             print("Successfully applied tweak \"" + option.title + "\"")
                         } else {
                             print("Failed to apply tweak \"" + option.title + "\"!!!")
+                            failed = true
                         }
                     } else {
                         do {
@@ -217,6 +218,7 @@ struct SpringBoardView: View {
                         } catch {
                             print("Failed to apply tweak \"" + option.title + "\"!!!")
                             print(error.localizedDescription)
+                            failed = true
                         }
                     }
                 } else {
@@ -225,6 +227,7 @@ struct SpringBoardView: View {
                         print("Successfully applied tweak \"" + option.title + "\"")
                     } else {
                         print("Failed to apply tweak \"" + option.title + "\"!!!")
+                        failed = true
                     }
                 }
                 
@@ -261,17 +264,28 @@ struct SpringBoardView: View {
                 var succeeded = true
                 for path in replacementPaths[fileIdentifier]! {
                     if fileIdentifier == "HomeBar" && value as? Bool == false {
-                        if let url: URL = Bundle.main.url(forResource: "HomeBarAssets", withExtension: "car") {
-                            do {
-                                let replacementCar = try Data(contentsOf: url)
-                                //try MDC.overwriteFile(at: "/System/Library/PrivateFrameworks/" + path, with: replacementCar)
-                            } catch {
-                                print(error.localizedDescription)
-                                succeeded = false
-                            }
+                        // Prefer the pre-hide backup; bundle HomeBarAssets.car is optional fallback.
+                        let backupDir = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+                            .appendingPathComponent("lara_sb_backups", isDirectory: true)
+                        let backupURL = backupDir.appendingPathComponent((path as NSString).lastPathComponent)
+                        let target = "/System/Library/PrivateFrameworks/" + path
+                        let restoreData: Data?
+                        if FileManager.default.fileExists(atPath: backupURL.path) {
+                            restoreData = try? Data(contentsOf: backupURL)
+                        } else if let url = Bundle.main.url(forResource: "HomeBarAssets", withExtension: "car") {
+                            restoreData = try? Data(contentsOf: url)
                         } else {
-                            print("Home bar file not found!")
-                            return false
+                            restoreData = nil
+                        }
+                        guard let car = restoreData, !car.isEmpty else {
+                            print("HomeBar restore data missing for \(target)")
+                            succeeded = false
+                            continue
+                        }
+                        let result = laramgr.shared.lara_overwritefile(target: target, data: car)
+                        if !result.ok {
+                            print("HomeBar restore failed: \(result.message)")
+                            succeeded = false
                         }
                     } else {
                         let target = "/System/Library/PrivateFrameworks/" + path

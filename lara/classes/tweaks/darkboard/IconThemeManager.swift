@@ -301,15 +301,23 @@ final class IconThemeManager: ObservableObject {
     func refreshThemes() {
         createDirectoriesIfNeeded()
         let contents = (try? fm.contentsOfDirectory(at: rawThemesDir, includingPropertiesForKeys: nil)) ?? []
-        themes = contents
+        let sortedThemes = contents
             .filter { $0.hasDirectoryPath }
             .map { url in
                 LaraIconTheme(name: url.lastPathComponent, iconCount: ((try? fm.contentsOfDirectory(at: url, includingPropertiesForKeys: nil)) ?? []).filter { $0.pathExtension.lowercased() == "png" }.count)
             }
             .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
 
-        selectedThemeNames.removeAll { selected in
-            !themes.contains(where: { $0.name == selected })
+        let publish = {
+            self.themes = sortedThemes
+            self.selectedThemeNames.removeAll { selected in
+                !self.themes.contains(where: { $0.name == selected })
+            }
+        }
+        if Thread.isMainThread {
+            publish()
+        } else {
+            DispatchQueue.main.sync(execute: publish)
         }
         saveSelection()
     }
@@ -369,7 +377,12 @@ final class IconThemeManager: ObservableObject {
             apps.append(app)
         }
 
-        installedApps = apps.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+        let sortedApps = apps.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+        if Thread.isMainThread {
+            installedApps = sortedApps
+        } else {
+            DispatchQueue.main.sync { self.installedApps = sortedApps }
+        }
     }
 
     func icons(forAppIDs appIDs: [String], from theme: LaraIconTheme) -> [UIImage?] {
@@ -562,13 +575,14 @@ final class IconThemeManager: ObservableObject {
 
                 do {
                     if let icon = change.icon {
-                        themedCount += 1
                         guard change.app.backUpPNGIcons() else {
                             errors.append("\(change.app.name): backup failed — skipping theme apply")
                             return
                         }
                         try? fm.createDirectory(at: processedThemesDir.appendingPathComponent(icon.themeName), withIntermediateDirectories: true, attributes: nil)
                         try change.app.setPNGIcons(icon: icon)
+                        // Count only after a successful write so pendingFixup reflects real changes.
+                        themedCount += 1
                     } else {
                         try change.app.restorePNGIcons()
                     }

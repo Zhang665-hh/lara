@@ -430,7 +430,15 @@ final class laramgr: ObservableObject {
         return (false, "\(prefix)sbx rename failed: errno=\(errno) \(String(cString: strerror(errno)))")
     }
     
-    @discardableResult
+    private func setFileOpInProgress(_ value: Bool) {
+        if Thread.isMainThread {
+            fileopinprogress = value
+        } else {
+            DispatchQueue.main.sync { self.fileopinprogress = value }
+        }
+    }
+
+        @discardableResult
     func lara_overwritefile(target: String, source: String, fallback_vfs: Bool = true) -> (ok: Bool, message: String) {
         guard !target.isEmpty else {
             return (false, "refusing to overwrite empty target path")
@@ -441,8 +449,8 @@ final class laramgr: ObservableObject {
         if fileopinprogress {
             return (false, "file overwrite already in progress")
         }
-        fileopinprogress = true
-        defer { fileopinprogress = false }
+        setFileOpInProgress(true)
+        defer { setFileOpInProgress(false) }
         
         let result: (ok: Bool, message: String)
         if sbxready {
@@ -486,8 +494,8 @@ final class laramgr: ObservableObject {
         if fileopinprogress {
             return (false, "file overwrite already in progress")
         }
-        fileopinprogress = true
-        defer { fileopinprogress = false }
+        setFileOpInProgress(true)
+        defer { setFileOpInProgress(false) }
         let result = sbxready ? sbxoverwrite(path: target, data: data) : (false, "sbx not ready")
         if result.0 {
             return result
