@@ -613,9 +613,10 @@ struct GestaltView: View {
                 return cacheData.bytes.load(fromByteOffset: off_appleInternalInstall, as: Int.self) == 1
             },
             set: { enabled in
-                _ = mgCacheDataWrite(cacheData, offset: off_appleInternalInstall, value: enabled ? 1 : 0)
-                _ = mgCacheDataWrite(cacheData, offset: off_HasInternalSettingsBundle, value: enabled ? 1 : 0)
-                _ = mgCacheDataWrite(cacheData, offset: off_InternalBuild, value: enabled ? 1 : 0)
+                let value = enabled ? 1 : 0
+                guard mgCacheDataWrite(cacheData, offset: off_appleInternalInstall, value: value),
+                      mgCacheDataWrite(cacheData, offset: off_HasInternalSettingsBundle, value: value),
+                      mgCacheDataWrite(cacheData, offset: off_InternalBuild, value: value) else { return }
             }
         )
     }

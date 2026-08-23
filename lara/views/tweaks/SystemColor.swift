@@ -323,7 +323,8 @@ struct SystemColor: View {
             original[e.coloroff + 3] = e.a
         }
 
-        let tmp = NSTemporaryDirectory() + "patched.car"
+        let tmp = (NSTemporaryDirectory() as NSString).appendingPathComponent("patched-\(UUID().uuidString).car")
+        defer { try? FileManager.default.removeItem(atPath: tmp) }
         do {
             try original.write(to: URL(fileURLWithPath: tmp))
         } catch {
@@ -333,8 +334,6 @@ struct SystemColor: View {
 
         let res = mgr.lara_overwritefile(target: syspath, source: tmp)
         status = res.ok ? "Patched!" : "Failed: \(res.message)"
-
-        try? FileManager.default.removeItem(atPath: tmp)
     }
     
     func clamptouint8(_ value: CGFloat) -> UInt8 {

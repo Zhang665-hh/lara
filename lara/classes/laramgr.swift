@@ -903,6 +903,7 @@ final class laramgr: ObservableObject {
             return
         }
         body(proc)
+        invalidateRCSessionIfNeeded(proc)
         #endif
     }
 
@@ -924,6 +925,7 @@ final class laramgr: ObservableObject {
         }
         defer { endRCRunning() }
         body(proc)
+        invalidateRCSessionIfNeeded(proc)
         #endif
     }
 
@@ -949,10 +951,11 @@ final class laramgr: ObservableObject {
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             work(proc)
             DispatchQueue.main.async {
-                // Prefer strong self; fall back to the singleton so rcrunning cannot stick forever.
                 if let self {
+                    self.invalidateRCSessionIfNeeded(proc)
                     self.endRCRunning()
                 } else {
+                    laramgr.shared.invalidateRCSessionIfNeeded(proc)
                     laramgr.shared.endRCRunning()
                 }
                 completion?()
@@ -1012,6 +1015,27 @@ final class laramgr: ObservableObject {
         if Thread.isMainThread { finish() }
         else { DispatchQueue.main.sync(execute: finish) }
         #endif
+    }
+
+    /// RemoteCall may self-teardown on statereply/trap failures; drop stale session pointers.
+    private func invalidateRCSessionIfNeeded(_ proc: RemoteCall) {
+        guard !proc.isSessionValid else { return }
+        let err = proc.lastError ?? "RemoteCall session destroyed"
+        let apply: () -> Void = {
+            if proc === self.sbProc {
+                self.sbProc = nil
+                self.rcready = false
+                self.rcLastError = err
+                self.logmsg("(rc) springboard session invalidated after internal teardown")
+            }
+            if proc === self.ytProc {
+                self.ytProc = nil
+                self.rcLastError = err
+                self.logmsg("(rc) youtube session invalidated after internal teardown")
+            }
+        }
+        if Thread.isMainThread { apply() }
+        else { DispatchQueue.main.sync(execute: apply) }
     }
     
     #if !DISABLE_REMOTECALL
@@ -1095,11 +1119,12 @@ final class laramgr: ObservableObject {
             
             DispatchQueue.main.async {
                 guard let self = self else {
-                    // Keep session consistent if the singleton somehow went away mid-init.
+                    laramgr.shared.invalidateRCSessionIfNeeded(sbProc)
                     laramgr.shared.endRCRunning()
                     completion?(nil)
                     return
                 }
+                self.invalidateRCSessionIfNeeded(sbProc)
                 let success = proc != nil
                 if success {
                     self.logmsg("remote call initialized on \(process)")
@@ -1220,16 +1245,18 @@ final class laramgr: ObservableObject {
     //  - timeout: timeout in ms
     //  ret: return value from rc
     func rccall(name: String, args: [UInt64] = [], timeout: Int32 = 100) -> UInt64 {
-        guard rcready, let sbProc else { return 0 }
-        // Hold the session lock for the call so rcdestroy cannot free sbProc mid-flight.
+        guard rcready, let proc = sbProc else { return 0 }
         guard beginRCRunning() else { return 0 }
-        defer { endRCRunning() }
+        defer {
+            invalidateRCSessionIfNeeded(proc)
+            endRCRunning()
+        }
         let RTLD_DEFAULT = UnsafeMutableRawPointer(bitPattern: -2)
         let ptr = dlsym(RTLD_DEFAULT, name)
         var argsCopy = args
         return name.withCString { (cName: UnsafePointer<CChar>) -> UInt64 in
             UInt64(argsCopy.withUnsafeMutableBufferPointer { buffer in
-                sbProc.doStable(
+                proc.doStable(
                     withTimeout: timeout,
                     functionName: UnsafeMutablePointer(mutating: cName),
                     functionPointer: ptr,

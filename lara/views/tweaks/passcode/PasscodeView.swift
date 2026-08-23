@@ -11,6 +11,7 @@ import PhotosUI
 import UniformTypeIdentifiers
 import Compression
 import Combine
+import CryptoKit
 
 fileprivate func passcodeDigitTokenMatches(_ stem: String, digit: String) -> Bool {
     guard digit.count == 1, let d = digit.first, d.isNumber else { return false }
@@ -189,10 +190,9 @@ final class PasscodeThemeManager: ObservableObject {
     }
 
     private func backupURLFor(targetPath: String) -> URL {
-        let sanitized = targetPath
-            .replacingOccurrences(of: "/", with: "_")
-        return passcodeBackupDir
-            .appendingPathComponent(sanitized)
+        let digest = SHA256.hash(data: Data(targetPath.utf8))
+        let hex = digest.map { String(format: "%02x", $0) }.joined()
+        return passcodeBackupDir.appendingPathComponent(hex)
     }
 }
 
