@@ -569,6 +569,9 @@ final class IconThemeManager: ObservableObject {
         let changeCount = max(Double(changes.count), 1.0)
         var errors: [String] = []
         var themedCount = 0
+        // True once we claim pendingFixup before a write. Must not clear the flag
+        // at the end if a later throw left themedCount at 0 after partial writes.
+        var claimedPendingFixup = false
 
         defer {
             DispatchQueue.main.async {
@@ -593,6 +596,7 @@ final class IconThemeManager: ObservableObject {
                         // Claim pendingFixup before writes so a mid-app throw after partial
                         // icon replacement still schedules restore / fixup.
                         UserDefaults.standard.set(true, forKey: pendingFixupKey)
+                        claimedPendingFixup = true
                         try change.app.setPNGIcons(icon: icon)
                         // Count only after a successful write so the final flag reflects real changes.
                         themedCount += 1
@@ -611,7 +615,12 @@ final class IconThemeManager: ObservableObject {
         }
         clearIconCache()
 
-        UserDefaults.standard.set(themedCount > 0, forKey: pendingFixupKey)
+        if themedCount > 0 {
+            UserDefaults.standard.set(true, forKey: pendingFixupKey)
+        } else if !claimedPendingFixup {
+            UserDefaults.standard.set(false, forKey: pendingFixupKey)
+        }
+        // else: claimed but every write failed after the claim — keep pendingFixup.
         return errors
     }
 

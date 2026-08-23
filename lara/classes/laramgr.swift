@@ -794,25 +794,15 @@ final class laramgr: ObservableObject {
             logmsg("(rc) youtube remote call requires darksword first")
             return nil
         }
-        // Serialize vs rcdestroy/rcinit on the main queue.
-        let decision: (busy: Bool, existing: RemoteCall?) = {
-            let body: () -> (Bool, RemoteCall?) = {
-                if self.rcrunning { return (true, self.ytProc) }
-                return (false, self.ytProc)
-            }
-            if Thread.isMainThread { return body() }
-            return DispatchQueue.main.sync(execute: body)
-        }()
-        if decision.busy {
-            return decision.existing
-        }
-        if let existing = decision.existing {
-            return existing
-        }
+        // Claim the session lock first so create cannot race another ensure/rcinit
+        // and orphan a live YouTube RemoteCall by overwriting ytProc.
         guard beginRCRunning() else {
             return ytProc
         }
         defer { endRCRunning() }
+        if let existing = ytProc {
+            return existing
+        }
         let proc = RemoteCall(process: "youtube", useMigFilterBypass: false)
         ytProc = proc
         if proc == nil {

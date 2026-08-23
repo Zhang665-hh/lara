@@ -25,6 +25,8 @@ struct RemoteView: View {
     @State private var hsColumns: Int = 4
     @State private var freakyrunning: Bool = false
     @State private var freakyseq: Int = 0
+    /// Serializes move vs stop so unpin cannot race an in-flight overlay move.
+    private let freakyMoveQueue = DispatchQueue(label: "lara.freaky.dog.move")
 
     private var dockMaxColumns: Int { rcdockunlimited ? 50 : 10 }
 
@@ -588,7 +590,7 @@ struct RemoteView: View {
         let maxw = max(Int(screen.width), 200)
         let maxh = max(Int(screen.height), 300)
 
-        DispatchQueue.global(qos: .userInitiated).async {
+        freakyMoveQueue.async {
             while true {
                 let shouldcontinue = DispatchQueue.main.sync { () -> Bool in
                     self.freakyrunning && self.freakyseq == seq && self.mgr.rcready
@@ -618,11 +620,16 @@ struct RemoteView: View {
         guard freakyrunning || mgr.rcrunning else { return }
         freakyrunning = false
         freakyseq += 1
-        if let proc = mgr.sbProc {
-            let result = disable_freaky_dog_overlay(proc)
-            mgr.logmsg("(rc) disable_freaky_dog_overlay() -> \(result)")
+        // Drain the move queue so disable/unpin cannot race an in-flight move_*.
+        freakyMoveQueue.async {
+            DispatchQueue.main.async {
+                if let proc = self.mgr.sbProc {
+                    let result = disable_freaky_dog_overlay(proc)
+                    self.mgr.logmsg("(rc) disable_freaky_dog_overlay() -> \(result)")
+                }
+                self.mgr.unpinSpringBoardRemoteCall()
+            }
         }
-        mgr.unpinSpringBoardRemoteCall()
     }
 
     private func parseRemoteCallArgs(_ text: String) -> (args: [UInt64], error: String?) {
