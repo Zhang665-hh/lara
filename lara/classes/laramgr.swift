@@ -366,14 +366,16 @@ final class laramgr: ObservableObject {
     
     private func sbxoverwrite(path: String, data: Data) -> (ok: Bool, message: String) {
         let immutableMessage = clearImmutableForOverwriteIfNeeded(path: path)
-        // Overwrite existing targets only — do not create missing sensitive paths.
-        let fd = open(path, O_WRONLY | O_TRUNC)
+        let prefix = immutableMessage.map { "\($0), " } ?? ""
+        // Never O_TRUNC the live target before bytes are committed. Write a sibling
+        // temp, then rename over the original (or fall through for VFS same-size overwrite).
+        let dir = (path as NSString).deletingLastPathComponent
+        let tmp = (dir as NSString).appendingPathComponent(".lara_sbx_\(UUID().uuidString).tmp")
+        let fd = open(tmp, O_WRONLY | O_CREAT | O_TRUNC, 0o644)
         if fd == -1 {
-            let prefix = immutableMessage.map { "\($0), " } ?? ""
-            return (false, "\(prefix)sbx open failed: errno=\(errno) \(String(cString: strerror(errno)))")
+            return (false, "\(prefix)sbx temp open failed: errno=\(errno) \(String(cString: strerror(errno)))")
         }
-        defer { close(fd) }
-        
+
         var total = 0
         let wroteAll = data.withUnsafeBytes { ptr -> Bool in
             guard let base = ptr.baseAddress else { return ptr.count == 0 }
@@ -384,16 +386,21 @@ final class laramgr: ObservableObject {
             }
             return true
         }
-        
+        close(fd)
+
         if !wroteAll {
-            return (false, "sbx write failed: errno=\(errno) \(String(cString: strerror(errno)))")
+            unlink(tmp)
+            return (false, "\(prefix)sbx temp write failed: errno=\(errno) \(String(cString: strerror(errno)))")
         }
 
-        if ftruncate(fd, off_t(total)) != 0 {
-            return (false, "sbx truncate failed: errno=\(errno) \(String(cString: strerror(errno)))")
+        if rename(tmp, path) == 0 {
+            return (true, "ok (\(total) bytes)")
         }
-        
-        return (true, "ok (\(total) bytes)")
+
+        // rename into protected system paths often fails — leave the original intact
+        // for VFS same-size overwrite fallback.
+        unlink(tmp)
+        return (false, "\(prefix)sbx rename failed: errno=\(errno) \(String(cString: strerror(errno)))")
     }
     
     @discardableResult
