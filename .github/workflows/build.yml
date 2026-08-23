@@ -10,7 +10,18 @@ permissions:
   contents: write
 
 jobs:
+  checks:
+    runs-on: ubuntu-latest
+    steps:
+      - name: checkout
+        uses: actions/checkout@v4
+      - name: static safety checks
+        run: |
+          python3 scripts/checks/check_no_malware.py
+          python3 scripts/checks/check_support_matrix.py
+
   build:
+    needs: checks
     runs-on: macos-26
     env:
       FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
