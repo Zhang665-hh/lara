@@ -265,8 +265,13 @@ struct ContentView: View {
                 mgr.respring()
             })
             
-            Button("Panic!", action: {
-                mgr.panic()
+            Button("Panic!", role: .destructive, action: {
+                Alertinator.shared.alert(
+                    title: "Kernel Panic?",
+                    body: "This will intentionally panic the kernel and reboot the device.",
+                    actionLabel: "Panic",
+                    action: { mgr.panic() }
+                )
             })
             
             if isdebugged() {

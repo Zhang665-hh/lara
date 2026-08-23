@@ -396,6 +396,9 @@ final class laramgr: ObservableObject {
     
     @discardableResult
     func lara_overwritefile(target: String, source: String, fallback_vfs: Bool = true) -> (ok: Bool, message: String) {
+        guard !target.isEmpty else {
+            return (false, "refusing to overwrite empty target path")
+        }
         guard FileManager.default.fileExists(atPath: source) else {
             return (false, "source file not found: \(source)")
         }
@@ -430,6 +433,9 @@ final class laramgr: ObservableObject {
     
     @discardableResult
     func lara_overwritefile(target: String, data: Data, fallback_vfs: Bool = true) -> (ok: Bool, message: String) {
+        guard !target.isEmpty else {
+            return (false, "refusing to overwrite empty target path")
+        }
         guard !data.isEmpty else {
             return (false, "refusing to overwrite with empty data")
         }
