@@ -282,9 +282,8 @@ struct SpringBoardView: View {
                             print("i hope it worked")
                         } else {
                             print("it didn't")
+                            succeeded = false
                         }
-                        
-                        return true
                     }
                 }
                 return succeeded

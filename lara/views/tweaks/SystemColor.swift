@@ -106,6 +106,7 @@ enum carparser {
 
             let key = ptrs[keyblk]
             let val = ptrs[valblk]
+            try require(data, key.0, key.1)
 
             var s = key.0
             let end = key.0 + key.1

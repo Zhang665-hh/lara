@@ -126,7 +126,19 @@ final class PasscodeGalleryManager: ObservableObject {
         guard let fileURL = downloadURL(for: theme) else { throw URLError(.badURL) }
         downloading.insert(theme.id)
         defer { downloading.remove(theme.id) }
-        let (data, _) = try await URLSession.shared.data(from: fileURL)
+        let (tempURL, response) = try await URLSession.shared.download(from: fileURL)
+        if let http = response as? HTTPURLResponse, !(200...299).contains(http.statusCode) {
+            throw URLError(.badServerResponse)
+        }
+        let attrs = try FileManager.default.attributesOfItem(atPath: tempURL.path)
+        let size = (attrs[.size] as? NSNumber)?.int64Value ?? 0
+        let maxBytes: Int64 = 64 * 1024 * 1024
+        guard size > 0, size <= maxBytes else {
+            try? FileManager.default.removeItem(at: tempURL)
+            throw URLError(.dataLengthExceedsMaximum)
+        }
+        let data = try Data(contentsOf: tempURL)
+        try? FileManager.default.removeItem(at: tempURL)
         let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
         let safeBase = theme.name
             .replacingOccurrences(of: "/", with: "_")
@@ -147,7 +159,13 @@ final class PasscodeGalleryManager: ObservableObject {
         guard let url = URL(string: urlString) else { throw URLError(.badURL) }
         var req = URLRequest(url: url)
         if forceRefresh { req.cachePolicy = .reloadIgnoringLocalCacheData }
-        let (data, _) = try await URLSession.shared.data(for: req)
+        let (data, response) = try await URLSession.shared.data(for: req)
+        if let http = response as? HTTPURLResponse, !(200...299).contains(http.statusCode) {
+            throw URLError(.badServerResponse)
+        }
+        guard data.count <= 2 * 1024 * 1024 else {
+            throw URLError(.dataLengthExceedsMaximum)
+        }
         let baseURL = url.deletingLastPathComponent()
 
         if let themes = try? JSONDecoder().decode([PasscodeGalleryTheme].self, from: data) {

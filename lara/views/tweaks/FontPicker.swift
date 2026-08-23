@@ -678,7 +678,14 @@ final class fontrepostore: ObservableObject {
         guard let repourl = URL(string: urlString) else {
             throw URLError(.badURL)
         }
-        let (repodata, _) = try await URLSession.shared.data(from: repourl)
+        let (repodata, response) = try await URLSession.shared.data(from: repourl)
+        if let http = response as? HTTPURLResponse, !(200...299).contains(http.statusCode) {
+            throw URLError(.badServerResponse)
+        }
+        // Cap repo JSON size — fonts themselves are already size-limited on download.
+        guard repodata.count <= 2 * 1024 * 1024 else {
+            throw URLError(.dataLengthExceedsMaximum)
+        }
         return try JSONDecoder().decode(fontrepodata.self, from: repodata)
     }
 }
