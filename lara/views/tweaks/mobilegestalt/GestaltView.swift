@@ -540,6 +540,7 @@ struct GestaltView: View {
             return Binding.constant(false)
         }
         let valueOffset = findcachedataoff("mtrAoWJ3gsq+I90ZnQ0vQw")
+        guard valueOffset >= 0 else { return Binding.constant(false) }
         let keys = [
             "uKc7FPnEO++lVhHWHFlGbQ", // ipad
             "mG0AnH/Vy1veoqoLRAIgTA", // MedusaFloatingLiveAppCapability
@@ -558,7 +559,8 @@ struct GestaltView: View {
             if enabled {
                 Alertinator.shared.alert(title: "Warning!", body: "This is a very dangerous tweak to use! If you use an alphanumeric passcode, DO NOT USE THIS TWEAK AT ALL! Please do not turn off \"Show Dock In Stage Manager\" or your device will BOOTLOOP when rotating to landscape! With these two things in mind, you may experience general instability, or other major issues such as app data randomly disappearing. But I guess some funny multitasking features that still make the device relatively unusable are cool? Whatever dude, I'm not here to tell you how to use your own device.")
             }
-            _ = mgCacheDataWrite(cacheData, offset: valueOffset, value: enabled ? 3 : 1)
+            // Require CacheData write before mutating CacheExtra so Apply cannot persist a split state.
+            guard mgCacheDataWrite(cacheData, offset: valueOffset, value: enabled ? 3 : 1) else { return }
             for key in keys {
                 if enabled {
                     cacheExtra[key] = 1
@@ -600,6 +602,11 @@ struct GestaltView: View {
         let off_appleInternalInstall = findcachedataoff("EqrsVvjcYDdxHBiQmGhAWw")
         let off_HasInternalSettingsBundle = findcachedataoff("Oji6HRoPi7rH7HPdWVakuw")
         let off_InternalBuild = findcachedataoff("LBJfwOEzExRxzlAnSuI7eg")
+        guard off_appleInternalInstall >= 0,
+              off_HasInternalSettingsBundle >= 0,
+              off_InternalBuild >= 0 else {
+            return Binding.constant(false)
+        }
         
         return Binding(
             get: {

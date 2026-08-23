@@ -585,6 +585,8 @@ final class IconThemeManager: ObservableObject {
         // True once we claim pendingFixup before a write. Must not clear the flag
         // at the end if a later throw left themedCount at 0 after partial writes.
         var claimedPendingFixup = false
+        // Apps successfully themed this pass — roll back on a later hard failure.
+        var successfullyThemed: [LaraThemedApp] = []
 
         defer {
             DispatchQueue.main.async {
@@ -593,6 +595,7 @@ final class IconThemeManager: ObservableObject {
         }
 
         for (index, change) in changes.enumerated() {
+            var stopApply = false
             autoreleasepool {
                 DispatchQueue.main.async {
                     self.applyProgress = Double(index) / changeCount
@@ -613,19 +616,34 @@ final class IconThemeManager: ObservableObject {
                         try change.app.setPNGIcons(icon: icon)
                         // Count only after a successful write so the final flag reflects real changes.
                         themedCount += 1
+                        successfullyThemed.append(change.app)
                     } else {
                         try change.app.restorePNGIcons()
                     }
                 } catch {
                     errors.append(error.localizedDescription)
+                    // Hard failure after some apps were themed: restore those apps so
+                    // SpringBoard is not left in a mixed-theme state.
+                    if !successfullyThemed.isEmpty {
+                        for app in successfullyThemed.reversed() {
+                            do { try app.restorePNGIcons() }
+                            catch { errors.append("rollback \(app.name): \(error.localizedDescription)") }
+                        }
+                        successfullyThemed.removeAll()
+                        themedCount = 0
+                        stopApply = true
+                    }
                 }
             }
+            if stopApply { break }
         }
 
         DispatchQueue.main.async {
             self.applyProgress = 1.0
             self.applyMessage = "Clearing icon cache..."
         }
+        // Only clear icon cache when we still have themed apps or a clean restore pass;
+        // after full rollback, clearing is still needed to drop partial cache.
         clearIconCache()
 
         if themedCount > 0 {
