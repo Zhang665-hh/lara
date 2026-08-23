@@ -437,7 +437,10 @@ struct CardView: View {
             return
         }
 
-        backupifneeded(card: card)
+        guard backupifneeded(card: card) else {
+            status = "Failed to create backup — aborting overwrite"
+            return
+        }
         if writeprefersbx(path: card.imgpath, data: data) {
             clearcache(for: card)
             promptforrespring = true
@@ -466,16 +469,18 @@ struct CardView: View {
         return nil
     }
 
-    private func backupifneeded(card: carditem) {
-        if resolvecardbackup(for: card) != nil { return }
+    private func backupifneeded(card: carditem) -> Bool {
+        if resolvecardbackup(for: card) != nil { return true }
         let backuppath = cardbackuppath(for: card)
-        if let data = readprefersbx(path: card.imgpath, maxsize: 16 * 1024 * 1024) {
-            // Prefer Documents — VFS cannot create sibling .backup next to Wallet passes.
-            do {
-                try data.write(to: URL(fileURLWithPath: backuppath), options: .atomic)
-            } catch {
-                _ = writeprefersbx(path: card.imgpath + ".backup", data: data)
-            }
+        guard let data = readprefersbx(path: card.imgpath, maxsize: 16 * 1024 * 1024) else {
+            return false
+        }
+        // Prefer Documents — VFS cannot create sibling .backup next to Wallet passes.
+        do {
+            try data.write(to: URL(fileURLWithPath: backuppath), options: .atomic)
+            return true
+        } catch {
+            return writeprefersbx(path: card.imgpath + ".backup", data: data)
         }
     }
 
@@ -525,12 +530,12 @@ struct CardView: View {
         return suffix
     }
 
-    private func backuppassjsonifneeded(card: carditem) {
+    private func backuppassjsonifneeded(card: carditem) -> Bool {
         let src = passjsonpath(for: card)
         let backup = passjsonbackuppath(for: card)
-        guard !FileManager.default.fileExists(atPath: backup) else { return }
-        guard let data = readprefersbx(path: src, maxsize: 512 * 1024) else { return }
-        _ = writeprefersbx(path: backup, data: data)
+        if FileManager.default.fileExists(atPath: backup) { return true }
+        guard let data = readprefersbx(path: src, maxsize: 512 * 1024) else { return false }
+        return writeprefersbx(path: backup, data: data)
     }
 
     private func applycardnum(card: carditem, newsuffix: String) {
@@ -538,7 +543,10 @@ struct CardView: View {
             status = "Failed to read pass.json"
             return
         }
-        backuppassjsonifneeded(card: card)
+        guard backuppassjsonifneeded(card: card) else {
+            status = "Failed to backup pass.json — aborting"
+            return
+        }
         let trimmed = newsuffix.trimmingCharacters(in: .whitespaces)
         if trimmed.isEmpty {
             json.removeValue(forKey: "primaryAccountSuffix")

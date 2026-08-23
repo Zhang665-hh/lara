@@ -151,11 +151,14 @@ struct WhitelistView: View {
     }
 
     private func sbxwrite(path: String, data: Data) -> String {
-        let fd = open(path, O_WRONLY | O_TRUNC)
+        // Never O_TRUNC the live system plist before bytes are committed — a failed
+        // write would leave Rejections/ban lists empty and VFS often cannot restore.
+        let dir = (path as NSString).deletingLastPathComponent
+        let tmp = (dir as NSString).appendingPathComponent(".lara_whitelist_\(UUID().uuidString).tmp")
+        let fd = open(tmp, O_WRONLY | O_CREAT | O_TRUNC, 0o644)
         if fd == -1 {
-            return vfsfallback(path: path, data: data, reason: "open failed: errno=\(errno) \(String(cString: strerror(errno)))")
+            return vfsfallback(path: path, data: data, reason: "temp open failed: errno=\(errno) \(String(cString: strerror(errno)))")
         }
-        defer { close(fd) }
 
         var written = 0
         let ok = data.withUnsafeBytes { ptr -> Bool in
@@ -167,12 +170,21 @@ struct WhitelistView: View {
             }
             return true
         }
+        close(fd)
 
         if !ok {
-            return vfsfallback(path: path, data: data, reason: "write failed: errno=\(errno) \(String(cString: strerror(errno)))")
+            unlink(tmp)
+            return vfsfallback(path: path, data: data, reason: "temp write failed: errno=\(errno) \(String(cString: strerror(errno)))")
         }
 
-        return "ok (\(written) bytes)"
+        if rename(tmp, path) == 0 {
+            return "ok (\(written) bytes)"
+        }
+
+        // rename into system path often fails under sandbox — fall back to VFS
+        // overwrite of the original without having truncated it.
+        unlink(tmp)
+        return vfsfallback(path: path, data: data, reason: "rename failed: errno=\(errno) \(String(cString: strerror(errno)))")
     }
 
     private func vfsfallback(path: String, data: Data, reason: String) -> String {

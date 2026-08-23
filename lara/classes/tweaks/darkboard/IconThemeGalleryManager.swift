@@ -63,6 +63,9 @@ final class IconThemeGalleryManager: ObservableObject {
             let baseURL = try await fetchServerBaseURL(forceRefresh: forceRefresh)
             let url = baseURL.appendingPathComponent("icon-themes.json")
             let (data, response) = try await session.data(from: url)
+            guard data.count <= 2 * 1024 * 1024 else {
+                throw NSError(domain: "IconThemeGallery", code: 6, userInfo: [NSLocalizedDescriptionKey: "Theme catalog too large."])
+            }
             guard let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode == 200 else {
                 throw NSError(domain: "IconThemeGallery", code: 1, userInfo: [NSLocalizedDescriptionKey: "Could not fetch the Cowabunga theme gallery."])
             }
@@ -96,10 +99,13 @@ final class IconThemeGalleryManager: ObservableObject {
     }
 
     func previewURL(for theme: GalleryTheme) -> URL? {
-        guard let serverBaseURL else {
-            return URL(string: theme.preview)
+        guard let serverBaseURL else { return nil }
+        guard let url = URL(string: theme.preview, relativeTo: serverBaseURL)?.absoluteURL else { return nil }
+        if let baseHost = serverBaseURL.host, let urlHost = url.host,
+           baseHost.caseInsensitiveCompare(urlHost) != .orderedSame {
+            return nil
         }
-        return URL(string: theme.preview, relativeTo: serverBaseURL)?.absoluteURL
+        return url
     }
 
     func isDownloading(_ theme: GalleryTheme) -> Bool {
@@ -155,6 +161,9 @@ final class IconThemeGalleryManager: ObservableObject {
             throw NSError(domain: "IconThemeGallery", code: 3, userInfo: [NSLocalizedDescriptionKey: "Invalid gallery commits URL."])
         }
         let (data, response) = try await session.data(from: commitURL)
+        guard data.count <= 1024 * 1024 else {
+            throw NSError(domain: "IconThemeGallery", code: 6, userInfo: [NSLocalizedDescriptionKey: "Commit metadata too large."])
+        }
         guard let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode == 200 else {
             throw NSError(domain: "IconThemeGallery", code: 4, userInfo: [NSLocalizedDescriptionKey: "Could not reach the Cowabunga gallery repository."])
         }

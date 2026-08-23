@@ -573,7 +573,7 @@ final class fontrepostore: ObservableObject {
 
     func addrepo(_ urlString: String) async {
         let trimmed = urlString.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty, URL(string: trimmed) != nil else { return }
+        guard !trimmed.isEmpty, let url = URL(string: trimmed), url.scheme?.lowercased() == "https" else { return }
         guard !repourls.contains(trimmed) else { return }
         repourls.append(trimmed)
         saverepourls(repourls)
@@ -614,8 +614,20 @@ final class fontrepostore: ObservableObject {
     }
 
 
-    private func downloadRemoteFile(from remoteurl: URL, to localurl: URL) async throws {
-        guard let scheme = remoteurl.scheme?.lowercased(), scheme == "https" || scheme == "http" else {
+    private func isAllowedFontHost(_ remote: URL, repoURL: String) -> Bool {
+        guard let remoteHost = remote.host?.lowercased() else { return false }
+        if let repoHost = URL(string: repoURL)?.host?.lowercased(), remoteHost == repoHost {
+            return true
+        }
+        return remoteHost == "raw.githubusercontent.com" || remoteHost.hasSuffix(".githubusercontent.com")
+    }
+
+    private func downloadRemoteFile(from remoteurl: URL, to localurl: URL, allowedHost: String? = nil) async throws {
+        guard let scheme = remoteurl.scheme?.lowercased(), scheme == "https" else {
+            throw URLError(.unsupportedURL)
+        }
+        if let allowedHost, let host = remoteurl.host,
+           host.caseInsensitiveCompare(allowedHost) != .orderedSame {
             throw URLError(.unsupportedURL)
         }
         let (tempurl, response) = try await URLSession.shared.download(from: remoteurl)
@@ -643,9 +655,11 @@ final class fontrepostore: ObservableObject {
         guard let remoteurl = URL(string: font.url) else { return }
         guard let localurl = localfonturl(repo: repo, font: font) else { return }
         if FileManager.default.fileExists(atPath: localurl.path) { return }
+        let repoURL = repos.first(where: { $0.data?.name == repo.name })?.url ?? ""
+        guard isAllowedFontHost(remoteurl, repoURL: repoURL) else { return }
 
         do {
-            try await downloadRemoteFile(from: remoteurl, to: localurl)
+            try await downloadRemoteFile(from: remoteurl, to: localurl, allowedHost: remoteurl.host)
         } catch {
             _ = await MainActor.run {
                 if let idx = repos.firstIndex(where: { $0.data?.name == repo.name }) {
@@ -662,9 +676,11 @@ final class fontrepostore: ObservableObject {
         guard let remoteurl = URL(string: emoji.url) else { return }
         guard let localurl = localemojiurl(repo: repo, emoji: emoji) else { return }
         if FileManager.default.fileExists(atPath: localurl.path) { return }
+        let repoURL = repos.first(where: { $0.data?.name == repo.name })?.url ?? ""
+        guard isAllowedFontHost(remoteurl, repoURL: repoURL) else { return }
 
         do {
-            try await downloadRemoteFile(from: remoteurl, to: localurl)
+            try await downloadRemoteFile(from: remoteurl, to: localurl, allowedHost: remoteurl.host)
         } catch {
             _ = await MainActor.run {
                 if let idx = repos.firstIndex(where: { $0.data?.name == repo.name }) {
@@ -675,8 +691,8 @@ final class fontrepostore: ObservableObject {
     }
 
     private func fetchrepo(_ urlString: String) async throws -> fontrepodata {
-        guard let repourl = URL(string: urlString) else {
-            throw URLError(.badURL)
+        guard let repourl = URL(string: urlString), repourl.scheme?.lowercased() == "https" else {
+            throw URLError(.unsupportedURL)
         }
         let (repodata, response) = try await URLSession.shared.data(from: repourl)
         if let http = response as? HTTPURLResponse, !(200...299).contains(http.statusCode) {

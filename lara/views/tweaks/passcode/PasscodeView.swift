@@ -292,6 +292,11 @@ struct PasscodeView: View {
             }
             
             do {
+                let attrs = try url.resourceValues(forKeys: [.fileSizeKey])
+                let fileSize = attrs.fileSize ?? 0
+                guard fileSize > 0, fileSize <= 64 * 1024 * 1024 else {
+                    throw NSError(domain: "PasscodeTheme", code: 1, userInfo: [NSLocalizedDescriptionKey: "Theme file too large or empty (max 64MB)."])
+                }
                 let data = try Data(contentsOf: url)
                 let tempDir =
                     FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)

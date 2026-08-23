@@ -299,6 +299,7 @@ struct DecryptView: View {
 
             let srcFrameworks = app.bundlePath + "/Frameworks"
             var srcFwSt = stat()
+            var frameworkFailures: [String] = []
             if stat(srcFrameworks, &srcFwSt) == 0 {
                 let frameworksPath = destAppPath + "/Frameworks"
                 let frameworks = (try? fm.contentsOfDirectory(atPath: frameworksPath)) ?? []
@@ -311,10 +312,20 @@ struct DecryptView: View {
                         let liveFwBinary = srcFrameworks + "/" + fw + "/" + fwName
                         let fwRet = decrypt_binary_pid(liveFwBinary, pid, fwBinary)
                         if fwRet != 0 {
+                            frameworkFailures.append(fwName)
                             laramgr.shared.logmsg("(decrypt) framework \(fwName) decrypt failed")
                         }
                     }
                 }
+            }
+
+            if !frameworkFailures.isEmpty {
+                DispatchQueue.main.async {
+                    decryptingbid = nil
+                    errormsg = "Failed to decrypt frameworks: \(frameworkFailures.joined(separator: ", "))"
+                    laramgr.shared.logmsg("(decrypt) aborting IPA share due to framework decrypt failures")
+                }
+                return
             }
 
             do {

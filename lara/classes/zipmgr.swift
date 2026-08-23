@@ -396,13 +396,18 @@ public class ZipArchive {
         let z64Off: UInt64 = data.scan(at: locatorOff + 8)
 
         guard z64Off < UInt64(data.count) - 56 else { return (0, Data()) }
-        let recSig: UInt32 = data.scan(at: Int(z64Off))
+        guard z64Off <= UInt64(Int.max) else { return (0, Data()) }
+        let z64OffInt = Int(z64Off)
+        let recSig: UInt32 = data.scan(at: z64OffInt)
         guard recSig == zip64EOCDRecordSignature else { return (0, Data()) }
-        let recSize: UInt64 = data.scan(at: Int(z64Off) + 4)
-        let totalSize = Int(recSize) + 12
-        guard Int(z64Off) + totalSize <= data.count else { return (0, Data()) }
-        let recData = data.subdata(in: Int(z64Off)..<Int(z64Off) + totalSize)
-        return (Int(z64Off), recData)
+        let recSize: UInt64 = data.scan(at: z64OffInt + 4)
+        // Avoid Int(recSize) trap on hostile archives; keep arithmetic in UInt64.
+        guard recSize <= UInt64(Int.max) - 12 else { return (0, Data()) }
+        let totalSizeU = recSize + 12
+        guard z64Off <= UInt64(data.count), totalSizeU <= UInt64(data.count) - z64Off else { return (0, Data()) }
+        let totalSize = Int(totalSizeU)
+        let recData = data.subdata(in: z64OffInt..<z64OffInt + totalSize)
+        return (z64OffInt, recData)
     }
 
     private struct ZIP64Fields {
@@ -497,14 +502,33 @@ public func createZipArchive(fromDirectory sourceURL: URL, to destinationURL: UR
     var localOffsets: [UInt32] = []
     var cdEntries: [Data] = []
 
+    let maxClassicZip: UInt64 = UInt64(UInt32.max)
+
     for entry in fileEntries {
         guard let nameData = entry.name.data(using: .utf8) else {
             error = "(zip) non-utf8 entry name: \(entry.name)"
             mgr.logmsg("\(error)")
             throw ZipError.corruptArchive("\(error)")
         }
+        guard nameData.count <= Int(UInt16.max) else {
+            error = "(zip) entry name too long: \(entry.name)"
+            mgr.logmsg("\(error)")
+            throw ZipError.corruptArchive("\(error)")
+        }
+        guard UInt64(entry.data.count) <= maxClassicZip else {
+            error = "(zip) entry exceeds classic zip 4GiB limit: \(entry.name)"
+            mgr.logmsg("\(error)")
+            throw ZipError.corruptArchive("\(error)")
+        }
         let nameLen = UInt16(nameData.count)
-        let offset = UInt32(try fh.offset())
+        let rawOffset = try fh.offset()
+        guard rawOffset <= maxClassicZip else {
+            error = "(zip) archive offset exceeds classic zip 4GiB limit"
+            mgr.logmsg("\(error)")
+            throw ZipError.corruptArchive("\(error)")
+        }
+        let offset = UInt32(rawOffset)
+        let entrySize = UInt32(entry.data.count)
 
         var lfh = Data()
         writeLE32(lfhSignature, to: &lfh)
@@ -514,8 +538,8 @@ public func createZipArchive(fromDirectory sourceURL: URL, to destinationURL: UR
         writeLE16(0, to: &lfh)
         writeLE16(0, to: &lfh)
         writeLE32(entry.crc32, to: &lfh)
-        writeLE32(UInt32(entry.data.count), to: &lfh)
-        writeLE32(UInt32(entry.data.count), to: &lfh)
+        writeLE32(entrySize, to: &lfh)
+        writeLE32(entrySize, to: &lfh)
         writeLE16(nameLen, to: &lfh)
         writeLE16(0, to: &lfh)
         try fh.write(contentsOf: lfh)
@@ -531,8 +555,8 @@ public func createZipArchive(fromDirectory sourceURL: URL, to destinationURL: UR
         writeLE16(0, to: &cd)
         writeLE16(0, to: &cd)
         writeLE32(entry.crc32, to: &cd)
-        writeLE32(UInt32(entry.data.count), to: &cd)
-        writeLE32(UInt32(entry.data.count), to: &cd)
+        writeLE32(entrySize, to: &cd)
+        writeLE32(entrySize, to: &cd)
         writeLE16(nameLen, to: &cd)
         writeLE16(0, to: &cd)
         writeLE16(0, to: &cd)
@@ -552,8 +576,19 @@ public func createZipArchive(fromDirectory sourceURL: URL, to destinationURL: UR
             mgr.logmsg("\(error)")
             throw ZipError.corruptArchive("\(error)")
         }
+        guard nameData.count <= Int(UInt16.max) else {
+            error = "(zip) directory name too long: \(dirName)"
+            mgr.logmsg("\(error)")
+            throw ZipError.corruptArchive("\(error)")
+        }
         let nameLen = UInt16(nameData.count)
-        let offset = UInt32(try fh.offset())
+        let rawOffset = try fh.offset()
+        guard rawOffset <= maxClassicZip else {
+            error = "(zip) archive offset exceeds classic zip 4GiB limit"
+            mgr.logmsg("\(error)")
+            throw ZipError.corruptArchive("\(error)")
+        }
+        let offset = UInt32(rawOffset)
 
         var lfh = Data()
         writeLE32(lfhSignature, to: &lfh)
@@ -593,21 +628,38 @@ public func createZipArchive(fromDirectory sourceURL: URL, to destinationURL: UR
         cdEntries.append(cd)
     }
 
-    let cdOffset = UInt32(try fh.offset())
-    var cdSize: UInt32 = 0
+    let rawCdOffset = try fh.offset()
+    guard rawCdOffset <= maxClassicZip else {
+        error = "(zip) central directory offset exceeds classic zip 4GiB limit"
+        mgr.logmsg("\(error)")
+        throw ZipError.corruptArchive("\(error)")
+    }
+    let cdOffset = UInt32(rawCdOffset)
+    var cdSize: UInt64 = 0
     for cd in cdEntries {
         try fh.write(contentsOf: cd)
-        cdSize += UInt32(cd.count)
+        cdSize += UInt64(cd.count)
+        guard cdSize <= maxClassicZip else {
+            error = "(zip) central directory exceeds classic zip 4GiB limit"
+            mgr.logmsg("\(error)")
+            throw ZipError.corruptArchive("\(error)")
+        }
     }
 
-    let totalEntries = UInt16(fileEntries.count + dirEntries.count)
+    let entryCount = fileEntries.count + dirEntries.count
+    guard entryCount <= Int(UInt16.max) else {
+        error = "(zip) too many entries for classic zip"
+        mgr.logmsg("\(error)")
+        throw ZipError.corruptArchive("\(error)")
+    }
+    let totalEntries = UInt16(entryCount)
     var eocd = Data()
     writeLE32(eocdSignature, to: &eocd)
     writeLE16(0, to: &eocd)
     writeLE16(0, to: &eocd)
     writeLE16(totalEntries, to: &eocd)
     writeLE16(totalEntries, to: &eocd)
-    writeLE32(cdSize, to: &eocd)
+    writeLE32(UInt32(cdSize), to: &eocd)
     writeLE32(cdOffset, to: &eocd)
     writeLE16(0, to: &eocd)
     try fh.write(contentsOf: eocd)
