@@ -148,10 +148,7 @@ final class laramgr: ObservableObject {
                     globallogger.log("(ds) exploit success!")
                     globallogger.log(String(format: "(ds) kernel_base:  0x%llx", self.kernbase))
                     globallogger.log(String(format: "(ds) kernel_slide: 0x%llx", self.kernslide))
-                    DispatchQueue.global(qos: .background).asyncAfter(deadline: .now() + 2.0) {
-                    }
-                    // =====================================================
-globallogger.divider()
+                    globallogger.divider()
                 } else {
                     self.dsfailed = true
                     self.logmsg("\nexploit failed.\n")
@@ -835,5 +832,3 @@ globallogger.divider()
     }
     #endif
 }
-
-

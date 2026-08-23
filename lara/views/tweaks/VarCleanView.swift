@@ -196,7 +196,7 @@ struct VarCleanView: View {
 
 private func loadvarcleangroups() -> [varcleangroup] {
     var error: NSError?
-    guard let rules = VarCleanBridge.loadRulesNamed("VarCleanRules", in: .main, error: &error) as? [String: Any] else {
+    guard let rules = VarCleanBridge.loadRulesNamed("VarCleanRules", inBundle: .main, error: &error) as? [String: Any] else {
         return []
     }
 

@@ -1,5 +1,5 @@
 #!/bin/bash
-set -euo pipefail
+set -uo pipefail
 
 rm -rf build/
 mkdir -p build
@@ -7,6 +7,8 @@ mkdir -p build
 echo "Build Started!"
 echo
 
+# Disable -e around the pipeline so we can capture PIPESTATUS and dump logs.
+set +e
 xcodebuild \
   -project lara.xcodeproj \
   -scheme lara \
@@ -19,22 +21,21 @@ xcodebuild \
   EXPANDED_CODE_SIGN_IDENTITY="" \
   AD_HOC_CODE_SIGNING_ALLOWED=NO \
   CODE_SIGN_ENTITLEMENTS="Config/lara.entitlements" \
-  "OTHER_LDFLAGS=\$(inherited) -framework Security -framework Photos" \
   SWIFT_STRICT_CONCURRENCY=minimal \
   SWIFT_TREAT_WARNINGS_AS_ERRORS=NO \
   GCC_TREAT_WARNINGS_AS_ERRORS=NO \
   archive \
   -archivePath "$PWD/build/lara.xcarchive" 2>&1 | tee "$PWD/build/xcodebuild.log" | xcpretty
-
 EXIT_CODE=${PIPESTATUS[0]}
+set -e
 
 APP_PATH="$PWD/build/lara.xcarchive/Products/Applications/lara.app"
 
-if [ $EXIT_CODE -ne 0 ] || [ ! -d "$APP_PATH" ]; then
+if [ "$EXIT_CODE" -ne 0 ] || [ ! -d "$APP_PATH" ]; then
   echo ""
   echo "=== BUILD FAILED (exit $EXIT_CODE) ==="
   echo "=== LAST 200 LINES ==="
-  tail -200 "$PWD/build/xcodebuild.log"
+  tail -200 "$PWD/build/xcodebuild.log" || true
   echo ""
   echo "=== ERROR LINES ONLY ==="
   grep -i "error:" "$PWD/build/xcodebuild.log" || echo "(no error: lines found)"
