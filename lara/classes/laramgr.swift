@@ -717,14 +717,11 @@ final class laramgr: ObservableObject {
     @discardableResult
     func ensureYouTubeRemoteCall() -> RemoteCall? {
         #if !DISABLE_REMOTECALL
-        // Never hand out ytProc while another RC session is tearing down/creating.
-        if rcrunning {
-            logmsg("(rc) youtube remote call busy")
-            return nil
-        }
+        // Reuse a live YouTube RC even if another session is briefly marked busy.
+        // Only gate *creation* so rccall/rcinit cannot race a fresh attach.
         if let existing = ytProc { return existing }
-        guard dsready else {
-            logmsg("(rc) youtube remote call requires darksword first")
+        guard dsready, !rcrunning else {
+            logmsg("(rc) youtube remote call requires darksword first (or session busy)")
             return nil
         }
         // Claim the RC session slot so rcinit/rcdestroy cannot tear down mid-init.
