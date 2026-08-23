@@ -16,6 +16,7 @@ struct LiquidGlassView: View {
     @EnvironmentObject private var mgr: laramgr
     
     @State private var gpCurrentDict: NSMutableDictionary = NSMutableDictionary()
+    @State private var gpLoaded: Bool = false
     @State private var trueBool: Bool = true
     
     @State private var dumbassToggleThatMakesTheViewUpdate: Bool = false
@@ -70,13 +71,19 @@ struct LiquidGlassView: View {
             chmod(gpSavedURL.path, 0o644)
             
             gpCurrentDict = try NSMutableDictionary(contentsOf: URL(fileURLWithPath: gpCurrentPath), error: ())
+            gpLoaded = true
         } catch {
+            gpLoaded = false
             Alertinator.shared.alert(title: "Failed to load Global Preferences data!", body: "Please restart the app and try again.")
         }
     }
     
     // MARK: applying/reloading functions
     func applyLiquidGlass() {
+        guard gpLoaded, gpCurrentDict.count > 0 else {
+            Alertinator.shared.alert(title: "Failed to enable Liquid Glass Tweaks!", body: "Global Preferences were not loaded — refusing to overwrite with an empty plist.")
+            return
+        }
         do {
             let gpData = try verifyPlist(gpCurrentDict, targetPath: gpCurrentPath)
             let result = mgr.lara_overwritefile(target: gpCurrentPath, data: gpData, fallback_vfs: false)

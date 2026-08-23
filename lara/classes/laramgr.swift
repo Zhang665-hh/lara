@@ -900,7 +900,12 @@ final class laramgr: ObservableObject {
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             work(proc)
             DispatchQueue.main.async {
-                self?.endRCRunning()
+                // Prefer strong self; fall back to the singleton so rcrunning cannot stick forever.
+                if let self {
+                    self.endRCRunning()
+                } else {
+                    laramgr.shared.endRCRunning()
+                }
                 completion?()
             }
         }
@@ -976,7 +981,11 @@ final class laramgr: ObservableObject {
             let proc = RemoteCall(process: process, useMigFilterBypass: migbypass)
             
             DispatchQueue.main.async {
-                guard let self = self else { return }
+                guard let self = self else {
+                    laramgr.shared.endRCRunning()
+                    completion?(false)
+                    return
+                }
                 // Publish sbProc only on the main thread — background writes race SwiftUI / other readers.
                 self.sbProc = proc
                 let success = proc != nil
@@ -1025,6 +1034,7 @@ final class laramgr: ObservableObject {
             DispatchQueue.main.async {
                 guard let self = self else {
                     // Keep session consistent if the singleton somehow went away mid-init.
+                    laramgr.shared.endRCRunning()
                     completion?(nil)
                     return
                 }
@@ -1060,14 +1070,20 @@ final class laramgr: ObservableObject {
         }
         
         logmsg("destroying remote call session...")
-        rcready = false
-        rcdestroyPending = false
-        // Snapshot and clear on the calling thread so rcinit cannot race a new
-        // sbProc into place while we destroy the previous session.
-        let sb = sbProc
-        let yt = ytProc
-        sbProc = nil
-        ytProc = nil
+        // Mutate @Published session state on the main queue only.
+        let clearPublished: () -> (RemoteCall?, RemoteCall?) = {
+            self.rcready = false
+            self.rcdestroyPending = false
+            let sb = self.sbProc
+            let yt = self.ytProc
+            self.sbProc = nil
+            self.ytProc = nil
+            return (sb, yt)
+        }
+        let (sb, yt): (RemoteCall?, RemoteCall?) = {
+            if Thread.isMainThread { return clearPublished() }
+            return DispatchQueue.main.sync(execute: clearPublished)
+        }()
         
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             sb?.destroy()
@@ -1075,8 +1091,12 @@ final class laramgr: ObservableObject {
             
             DispatchQueue.main.async {
                 // Prefer endRCRunning so a re-queued destroy during teardown is flushed.
-                self?.logmsg("remote call session destroyed")
-                self?.endRCRunning()
+                if let self {
+                    self.logmsg("remote call session destroyed")
+                    self.endRCRunning()
+                } else {
+                    laramgr.shared.endRCRunning()
+                }
                 completion?()
             }
         }
@@ -1099,7 +1119,11 @@ final class laramgr: ObservableObject {
             let success = transfer_krw_to_launchd()
 
             DispatchQueue.main.async {
-                guard let self else { return }
+                guard let self else {
+                    laramgr.shared.endRCRunning()
+                    completion?(false)
+                    return
+                }
                 if success {
                     self.rcLastError = nil
                     self.logmsg("(persist) manual KRW transfer to launchd succeeded")

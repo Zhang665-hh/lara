@@ -550,6 +550,28 @@ struct santanderdirview: View {
         }
     }
 
+
+    /// Stage to a sibling temp, then replace/move into place so a failed copy cannot leave the destination deleted.
+    private static func atomicCopy(from src: String, to dest: String, replace: Bool) throws {
+        let destURL = URL(fileURLWithPath: dest)
+        let staging = dest + ".lara_paste_tmp"
+        let stagingURL = URL(fileURLWithPath: staging)
+        if FileManager.default.fileExists(atPath: staging) {
+            try santanderfs.removeItemClearingImmutable(atPath: staging)
+        }
+        try FileManager.default.copyItem(atPath: src, toPath: staging)
+        defer {
+            if FileManager.default.fileExists(atPath: staging) {
+                try? santanderfs.removeItemClearingImmutable(atPath: staging)
+            }
+        }
+        if replace && FileManager.default.fileExists(atPath: dest) {
+            _ = try FileManager.default.replaceItemAt(destURL, withItemAt: stagingURL)
+        } else {
+            try FileManager.default.moveItem(at: stagingURL, to: destURL)
+        }
+    }
+
     private func paste(replace: Bool) {
         guard readsbx else {
             msg = santandermsg(title: "Paste Unavailable", text: "Paste is only supported in SBX mode.")
@@ -566,10 +588,7 @@ struct santanderdirview: View {
         let dest = replace ? base : santanderfs.uniquepath(base: base)
 
         do {
-            if replace && FileManager.default.fileExists(atPath: dest) {
-                try santanderfs.removeItemClearingImmutable(atPath: dest)
-            }
-            try FileManager.default.copyItem(atPath: clipitem.path, toPath: dest)
+            try Self.atomicCopy(from: clipitem.path, to: dest, replace: replace)
             model.load(query: query.trimmingCharacters(in: .whitespacesAndNewlines))
         } catch {
             msg = santandermsg(title: "Paste Failed", text: error.localizedDescription)
@@ -600,10 +619,7 @@ struct santanderdirview: View {
         }
 
         do {
-            if FileManager.default.fileExists(atPath: entry.path) {
-                try santanderfs.removeItemClearingImmutable(atPath: entry.path)
-            }
-            try FileManager.default.copyItem(atPath: clipitem.path, toPath: entry.path)
+            try Self.atomicCopy(from: clipitem.path, to: entry.path, replace: true)
             model.load(query: query.trimmingCharacters(in: .whitespacesAndNewlines))
         } catch {
             msg = santandermsg(title: "Replace Failed", text: error.localizedDescription)

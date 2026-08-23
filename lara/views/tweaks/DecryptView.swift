@@ -222,22 +222,18 @@ struct DecryptView: View {
                 launch_app(selfId)
                 usleep(500000)
 
-                if self.pendingdecrypt != nil {
-                    self.pendingdecrypt = nil
-                    let foundPid = find_process_pid(app.executable)
-                    if foundPid > 0 {
-                        DispatchQueue.main.async {
+                let foundPid = find_process_pid(app.executable)
+                DispatchQueue.main.async {
+                    // @State must only be mutated on the main queue.
+                    if self.pendingdecrypt != nil {
+                        self.pendingdecrypt = nil
+                        if foundPid > 0 {
                             self.doDecrypt(app, pid: foundPid)
-                        }
-                    } else {
-                        DispatchQueue.main.async {
+                        } else {
                             self.decryptingbid = nil
                             self.errormsg = "Process not found after launch. Try manually."
                         }
                     }
-                }
-
-                DispatchQueue.main.async {
                     UIApplication.shared.endBackgroundTask(bgTask)
                 }
             }
