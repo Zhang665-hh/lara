@@ -12,20 +12,34 @@ import UniformTypeIdentifiers
 import Compression
 import Combine
 
+fileprivate func passcodeDigitTokenMatches(_ stem: String, digit: String) -> Bool {
+    guard digit.count == 1, let d = digit.first, d.isNumber else { return false }
+    if stem == digit { return true }
+    let chars = Array(stem)
+    for i in chars.indices where chars[i] == d {
+        let prev = i > chars.startIndex ? chars[i - 1] : nil
+        let next = i + 1 < chars.endIndex ? chars[i + 1] : nil
+        // Reject multi-digit runs: "-10" must not match digit 0 or 1 as a lone token.
+        if let prev, prev.isNumber { continue }
+        if let next, next.isNumber { continue }
+        if prev == nil && next == nil { return true }
+        let prevSep = (prev == nil) || prev == "-" || prev == "_" || prev == "@"
+        let nextSep = (next == nil) || next == "-" || next == "_" || next == "@"
+        if prevSep && nextSep { return true }
+    }
+    return false
+}
+
 fileprivate func passcodeMatchFilenameToKey(_ filename: String) -> String? {
         let base = (filename as NSString).lastPathComponent.lowercased()
         let stem = (base as NSString).deletingPathExtension
-        // Exact stem "0"..."9"
-        if let n = Int(stem), (0...9).contains(n) { return String(n) }
-        // Prefer multi-digit-safe tokens; scan 9...0 so "-10-" cannot match as "-1-".
+        // Exact stem "0"..."9" only — reject "10"/"01" as Int(stem) would be out of 0...9 or ambiguous.
+        if stem.count == 1, let n = Int(stem), (0...9).contains(n) { return String(n) }
+        // Scan 9...0; token boundaries prevent "-10" matching as "-0" / "-1".
         // Do NOT use bare hasSuffix("0.png") — that maps "10.png" / "button0.png" to digit 0.
         for i in (0...9).reversed() {
             let s = String(i)
-            if base.contains("other-2-\(s)--dark") ||
-                stem == s ||
-                stem.hasPrefix("\(s)-") || stem.hasSuffix("-\(s)") ||
-                stem.contains("-\(s)-") || stem.contains("_\(s)_") ||
-                stem.contains("-\(s)@") || stem.contains("_\(s)@") {
+            if base.contains("other-2-\(s)--dark") || passcodeDigitTokenMatches(stem, digit: s) {
                 return s
             }
         }

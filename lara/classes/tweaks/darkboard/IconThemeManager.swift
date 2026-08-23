@@ -834,7 +834,17 @@ final class IconThemeManager: ObservableObject {
 
                 do {
                     try FileManager.default.createDirectory(at: outputURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+                    // Cap per-entry uncompressed size to blunt zip-bomb RAM spikes.
+                    let maxEntryBytes = 16 * 1024 * 1024
+                    guard entry.uncompressedSize <= maxEntryBytes else {
+                        unzip_logmsg("skip oversized entry: \(entry.path) (\(entry.uncompressedSize) bytes)")
+                        continue
+                    }
                     let extracted = try archive.extract(entry)
+                    guard extracted.count <= maxEntryBytes else {
+                        unzip_logmsg("skip inflated entry over cap: \(entry.path)")
+                        continue
+                    }
                     unzip_logmsg("extracted size: \(extracted.count)")
                     
                     try extracted.write(to: outputURL)

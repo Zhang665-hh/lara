@@ -722,6 +722,13 @@ final class laramgr: ObservableObject {
             logmsg("(rc) youtube remote call requires darksword first (or session busy)")
             return nil
         }
+        // Claim the RC session slot so rcinit/rcdestroy cannot tear down mid-init.
+        rcrunning = true
+        defer {
+            DispatchQueue.main.async { [weak self] in
+                self?.rcrunning = false
+            }
+        }
         let proc = RemoteCall(process: "youtube", useMigFilterBypass: false)
         ytProc = proc
         if proc == nil {
