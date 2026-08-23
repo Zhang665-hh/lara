@@ -420,7 +420,7 @@ final class laramgr: ObservableObject {
         // restored after both SBX and VFS attempts (success or failure).
         let dir = (path as NSString).deletingLastPathComponent
         let tmp = (dir as NSString).appendingPathComponent(".lara_sbx_\(UUID().uuidString).tmp")
-        let fd = open(tmp, O_WRONLY | O_CREAT | O_TRUNC, 0o644)
+        let fd = open(tmp, O_WRONLY | O_CREAT | O_TRUNC | O_EXCL, 0o644)
         if fd == -1 {
             return (false, "sbx temp open failed: errno=\(errno) \(String(cString: strerror(errno)))")
         }
