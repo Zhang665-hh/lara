@@ -82,8 +82,10 @@ struct LaraThemedApp: Identifiable, Hashable {
         return nil
     }
 
-    func backUpPNGIcons() {
+    @discardableResult
+    func backUpPNGIcons() -> Bool {
         let fm = FileManager.default
+        var ok = true
         for pngIconPath in pngIconPaths {
             let legacyURL = originalIconsDir.appendingPathComponent(bundleIdentifier + "----" + pngIconPath)
             let newURL = backupIconURL(fileName: pngIconPath)
@@ -93,11 +95,14 @@ struct LaraThemedApp: Identifiable, Hashable {
             if fm.fileExists(atPath: newURL.path) {
                 continue
             } else if fm.fileExists(atPath: legacyURL.path) {
-                try? fm.moveItem(at: legacyURL, to: newURL)
+                do { try fm.moveItem(at: legacyURL, to: newURL) }
+                catch { ok = false }
             } else {
-                try? fm.copyItem(at: sourceURL, to: newURL)
+                do { try fm.copyItem(at: sourceURL, to: newURL) }
+                catch { ok = false }
             }
         }
+        return ok
     }
 
     func restorePNGIcons() throws {
@@ -537,7 +542,10 @@ final class IconThemeManager: ObservableObject {
                 do {
                     if let icon = change.icon {
                         themedCount += 1
-                        change.app.backUpPNGIcons()
+                        guard change.app.backUpPNGIcons() else {
+                            errors.append("\(change.app.name): backup failed — skipping theme apply")
+                            return
+                        }
                         try? fm.createDirectory(at: processedThemesDir.appendingPathComponent(icon.themeName), withIntermediateDirectories: true, attributes: nil)
                         try change.app.setPNGIcons(icon: icon)
                     } else {

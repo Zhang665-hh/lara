@@ -717,6 +717,18 @@ final class fontrepostore: ObservableObject {
             throw URLError(.unsupportedURL)
         }
         let (repodata, response) = try await URLSession.shared.data(from: repourl)
+        // URLSession follows redirects — pin the final host the same way downloads do.
+        if let finalURL = response.url {
+            guard finalURL.scheme?.lowercased() == "https" else {
+                throw URLError(.unsupportedURL)
+            }
+            let host = (finalURL.host ?? "").lowercased()
+            let initialHost = (repourl.host ?? "").lowercased()
+            let ok = host == initialHost ||
+                host == "raw.githubusercontent.com" ||
+                host.hasSuffix(".githubusercontent.com")
+            guard ok else { throw URLError(.unsupportedURL) }
+        }
         if let http = response as? HTTPURLResponse, !(200...299).contains(http.statusCode) {
             throw URLError(.badServerResponse)
         }

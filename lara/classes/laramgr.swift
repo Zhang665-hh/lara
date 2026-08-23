@@ -730,7 +730,7 @@ final class laramgr: ObservableObject {
     
     #if !DISABLE_REMOTECALL
     func rcinit(process: String, migbypass: Bool = false, completion: ((Bool) -> Void)? = nil) {
-        guard dsready, !rcready else {
+        guard dsready, !rcready, !rcrunning else {
             completion?(false)
             return
         }
@@ -808,6 +808,12 @@ final class laramgr: ObservableObject {
     
     func rcdestroy(completion: (() -> Void)? = nil) {
         guard rcready || sbProc != nil || ytProc != nil else {
+            completion?()
+            return
+        }
+        // Do not tear down while rcinit / daemon wake / stable calls are in flight.
+        guard !rcrunning else {
+            logmsg("remote call destroy deferred: session busy")
             completion?()
             return
         }

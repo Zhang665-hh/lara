@@ -225,6 +225,12 @@ public class ZipArchive {
 
         if cdOffset32 == UInt32.max || cdSize32 == UInt32.max || totalEntries16 == UInt16.max {
             let (_, z64rec) = try locateZIP64EOCD(eocdOffset: eocdOffset)
+            // ZIP64 EOCD fixed fields used below require at least 56 bytes.
+            if !z64rec.isEmpty && z64rec.count < 56 {
+                error = "(zip) zip64 eocd record too short"
+                mgr.logmsg("\(error)")
+                throw ZipError.corruptArchive("\(error)")
+            }
             cdOffset = z64rec.isEmpty ? UInt64(cdOffset32) : z64rec.scan(at: 48) as UInt64
             cdSize = z64rec.isEmpty ? UInt64(cdSize32) : z64rec.scan(at: 40) as UInt64
             totalEntries = z64rec.isEmpty ? UInt64(totalEntries16) : z64rec.scan(at: 32) as UInt64
@@ -240,7 +246,8 @@ public class ZipArchive {
             throw ZipError.tooLarge("\(error)")
         }
 
-        guard cdOffset + cdSize <= UInt64(data.count) else {
+        guard cdSize <= UInt64(data.count),
+              cdOffset <= UInt64(data.count) - cdSize else {
             error = "(zip) cd out of bounds"
             mgr.logmsg("\(error)")
             throw ZipError.corruptArchive("\(error)")
