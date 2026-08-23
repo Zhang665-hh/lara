@@ -847,7 +847,15 @@ final class IconThemeManager: ObservableObject {
                     
                     try extracted.write(to: outputURL)
                     unzip_logmsg("wrote to file")
-                } catch { unzip_logmsg("extract fail: \(entry.path) to \(error.localizedDescription)") }
+                } catch {
+                    unzip_logmsg("extract fail: \(entry.path) to \(error.localizedDescription)")
+                    // Size/integrity failures must abort the whole import (no partial themes).
+                    let ns = error as NSError
+                    if ns.domain == "IconTheme" && ns.code == 10 {
+                        try? FileManager.default.removeItem(at: destination)
+                        throw error
+                    }
+                }
             }
         }
 
