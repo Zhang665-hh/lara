@@ -207,14 +207,13 @@ class SpringboardColorManager {
                 do {
                     let originalFileSize = try Data(contentsOf: newUrl).count
                     let newData = try addEmptyData(matchingSize: originalFileSize, to: plist)
-                    if newData.count == originalFileSize {
-                        if asTemp {
-                            try newData.write(to: FileManager.default.temporaryDirectory.appendingPathComponent(file+ext))
-                        } else {
-                            try newData.write(to: bgDir.appendingPathComponent(file+ext))
-                        }
+                    guard newData.count == originalFileSize else {
+                        throw "Not the correct file size for item \(file+ext)! (\(newData.count) vs \(originalFileSize))"
+                    }
+                    if asTemp {
+                        try newData.write(to: FileManager.default.temporaryDirectory.appendingPathComponent(file+ext))
                     } else {
-                        print("NOT CORRECT SIZE")
+                        try newData.write(to: bgDir.appendingPathComponent(file+ext))
                     }
                 } catch {
                     print(error.localizedDescription)
@@ -314,26 +313,41 @@ class SpringboardColorManager {
             throw "Could not find the background files directory!"
         }
 
-        var errors: [String] = []
+        // Stage all replacements first; refuse partial SpringBoard material writes.
+        var staged: [(target: String, data: Data, backup: Data)] = []
         for file in files {
-            do {
-                let sourceURL: URL
-                if asTemp {
-                    sourceURL = FileManager.default.temporaryDirectory.appendingPathComponent(file + ext)
-                } else {
-                    sourceURL = bgDir.appendingPathComponent(file + ext)
-                }
-                let newData = try Data(contentsOf: sourceURL)
-                let result = laramgr.shared.lara_overwritefile(target: "\(folder)\(file)\(ext)", data: newData)
-                if !result.ok {
-                    throw "failed to overwrite with replacement file!"
-                }
-            } catch {
-                errors.append("\(file)\(ext): \(error.localizedDescription)")
+            let sourceURL: URL
+            if asTemp {
+                sourceURL = FileManager.default.temporaryDirectory.appendingPathComponent(file + ext)
+            } else {
+                sourceURL = bgDir.appendingPathComponent(file + ext)
             }
+            let target = "\(folder)\(file)\(ext)"
+            let newData = try Data(contentsOf: sourceURL)
+            guard !newData.isEmpty else {
+                throw "refusing empty replacement for \(file)\(ext)"
+            }
+            let backup = try Data(contentsOf: URL(fileURLWithPath: target))
+            guard !backup.isEmpty else {
+                throw "refusing empty target for \(file)\(ext)"
+            }
+            staged.append((target, newData, backup))
         }
-        if !errors.isEmpty {
-            throw errors.joined(separator: "; ")
+
+        var appliedBackups: [(path: String, backup: Data)] = []
+        do {
+            for item in staged {
+                let result = laramgr.shared.lara_overwritefile(target: item.target, data: item.data)
+                guard result.ok else {
+                    throw "\(item.target): \(result.message)"
+                }
+                appliedBackups.append((item.target, item.backup))
+            }
+        } catch {
+            for item in appliedBackups.reversed() {
+                _ = laramgr.shared.lara_overwritefile(target: item.path, data: item.backup)
+            }
+            throw error
         }
     }
     
@@ -466,6 +480,9 @@ func addEmptyData(matchingSize: Int, to plist: [String: Any]) throws -> Data {
         }
     }
 
+    guard newData.count == matchingSize else {
+        throw "Unable to pad plist to exact size (\(newData.count) vs \(matchingSize))"
+    }
     return newData
 }
 

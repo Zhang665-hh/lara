@@ -106,6 +106,10 @@ struct FontPicker: View {
                                     save(customfonts)
                                     return
                                 }
+                                guard fontSizesEqual(target: selectedTarget.path, source: font.path) else {
+                                    mgr.logmsg("font overwrite refused: \(font.name) size != target (exact size required)")
+                                    return
+                                }
                                 let result = mgr.lara_overwritefile(target: selectedTarget.path, source: font.path)
                                 if result.ok {
                                     mgr.logmsg("font changed to \(font.name)")
@@ -213,6 +217,17 @@ private func viewfontfile(path: String, size: CGFloat) -> Font {
     return .system(size: size)
 }
 
+/// VFS overwrite requires exact byte equality; refuse mismatched fonts before touching system files.
+private func fontSizesEqual(target: String, source: String) -> Bool {
+    let fm = FileManager.default
+    guard let t = (try? fm.attributesOfItem(atPath: target)[.size] as? NSNumber)?.int64Value,
+          let s = (try? fm.attributesOfItem(atPath: source)[.size] as? NSNumber)?.int64Value,
+          t > 0, s > 0 else {
+        return false
+    }
+    return t == s
+}
+
 private let fontkey = "customfonts"
 private let fontrepokey = "fontrepos"
 private let defaultrepo = "https://raw.githubusercontent.com/rooootdev/larafonts/main/fonts.json"
@@ -318,6 +333,10 @@ struct repofontrow: View {
 
         Button {
             if iddownloaded, let localurl {
+                guard fontSizesEqual(target: laramgr.fontpath, source: localurl.path) else {
+                    mgr.logmsg("font overwrite refused: \(font.name) size != system font (exact size required)")
+                    return
+                }
                 let result = mgr.lara_overwritefile(target: laramgr.fontpath, source: localurl.path
                 )
                 if result.ok {
@@ -361,6 +380,10 @@ private struct repoemojirow: View {
             		mgr.logmsg("emoji font must be .ttc, got .\(localurl.pathExtension)")
             		return
         		}
+                guard fontSizesEqual(target: emojipath, source: localurl.path) else {
+                    mgr.logmsg("emoji overwrite refused: \(emoji.name) size != AppleColorEmoji (exact size required)")
+                    return
+                }
                 let result = mgr.lara_overwritefile(target: emojipath, source: localurl.path)
                 if result.ok {
                     mgr.logmsg("emoji changed to \(emoji.name)")

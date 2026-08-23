@@ -135,9 +135,47 @@ final class PasscodeThemeManager: ObservableObject {
 
     func applyImage(data: Data, to targetPath: String) throws {
         try backupIfNeeded(targetPath: targetPath)
-        let overwrite = laramgr.shared.lara_overwritefile(target: targetPath, data: data)
 
-        if !overwrite.ok { throw NSError(domain: "PasscodeTheme", code: 2, userInfo: [NSLocalizedDescriptionKey: overwrite.message]) }
+        let targetURL = URL(fileURLWithPath: targetPath)
+        let targetData = try Data(contentsOf: targetURL)
+        guard !targetData.isEmpty else {
+            throw NSError(domain: "PasscodeTheme", code: 4,
+                          userInfo: [NSLocalizedDescriptionKey: "empty target: \(targetPath)"])
+        }
+
+        // Resize to the live TelephonyUI asset's pixel size — never force a fixed height
+        // (devices/caches differ; a hard-coded 202px produced wrong-size partial writes).
+        var payload = data
+        if let targetImage = UIImage(data: targetData),
+           let sourceImage = UIImage(data: data),
+           targetImage.size.width > 0, targetImage.size.height > 0 {
+            let resized = Self.resizeImage(sourceImage, to: targetImage.size)
+            guard let png = resized.pngData(), !png.isEmpty else {
+                throw NSError(domain: "PasscodeTheme", code: 5,
+                              userInfo: [NSLocalizedDescriptionKey: "failed to encode resized passcode image"])
+            }
+            payload = png
+        }
+
+        // VFS same-size only; SBX rename may change size. Prefer exact match when possible.
+        if payload.count != targetData.count && !laramgr.shared.sbxready {
+            throw NSError(domain: "PasscodeTheme", code: 6,
+                          userInfo: [NSLocalizedDescriptionKey:
+                            "size mismatch for \(targetPath) (\(payload.count) vs \(targetData.count)); SBX required for size-changing write"])
+        }
+
+        let overwrite = laramgr.shared.lara_overwritefile(target: targetPath, data: payload)
+        if !overwrite.ok {
+            throw NSError(domain: "PasscodeTheme", code: 2,
+                          userInfo: [NSLocalizedDescriptionKey: overwrite.message])
+        }
+    }
+
+    static func resizeImage(_ image: UIImage, to size: CGSize) -> UIImage {
+        let renderer = UIGraphicsImageRenderer(size: size)
+        return renderer.image { _ in
+            image.draw(in: CGRect(origin: .zero, size: size))
+        }
     }
 
     private func backupURLFor(targetPath: String) -> URL {
@@ -475,10 +513,12 @@ struct PasscodeView: View {
 
             let total = max(Double(selectedKeys.count), 1.0)
             var successCount = 0
-            var failCount = 0
             var errors: [String] = []
+            var appliedPaths: [String] = []
+            var aborted = false
 
             for (index, item) in selectedKeys.enumerated() {
+                if aborted { break }
                 autoreleasepool {
                     let keyId = item.key
                     let imageData = item.value
@@ -490,8 +530,8 @@ struct PasscodeView: View {
                     }
 
                     if matched.isEmpty {
-                        failCount += 1
                         errors.append("no target found for \(keyId)")
+                        aborted = true
                         return
                     }
 
@@ -499,12 +539,25 @@ struct PasscodeView: View {
                         do {
                             try passcodeThemeManager.applyImage(data: imageData, to: path)
                             successCount += 1
+                            appliedPaths.append(path)
                             mgr.logmsg("applied \(keyId) -> \(path)")
                         } catch {
-                            failCount += 1
                             errors.append("\(path): \(error.localizedDescription)")
                             mgr.logmsg("failed \(path): \(error.localizedDescription)")
+                            aborted = true
+                            break
                         }
+                    }
+                }
+            }
+
+            if aborted, !appliedPaths.isEmpty {
+                for path in appliedPaths.reversed() {
+                    do {
+                        try passcodeThemeManager.restoreBackup(targetPath: path)
+                        mgr.logmsg("rolled back \(path)")
+                    } catch {
+                        mgr.logmsg("rollback failed \(path): \(error.localizedDescription)")
                     }
                 }
             }
@@ -512,12 +565,12 @@ struct PasscodeView: View {
             DispatchQueue.main.async {
                 passcodeThemeManager.progress = 1.0
 
-                if failCount == 0 {
+                if !aborted {
                     passcodeThemeManager.message = "Done"
                     statusMessage = "applied \(successCount) file(s)"
                 } else {
-                    passcodeThemeManager.message = "Completed with errors"
-                    statusMessage = "applied \(successCount), failed \(failCount)\n\n\(errors.joined(separator: "\n"))"
+                    passcodeThemeManager.message = "Failed — rolled back"
+                    statusMessage = "apply aborted after \(successCount) write(s); restored backups where possible\n\n\(errors.joined(separator: "\n"))"
                 }
             }
         }
@@ -549,13 +602,29 @@ struct PasscodeView: View {
             statusMessage = "Error: SBX not ready"
             return
         }
-        processing = true
-        statusMessage = ""
+
+        // Same claim as applyTheme so restore cannot race mid-apply TelephonyUI writes.
+        let claimed: Bool = {
+            if processing || passcodeThemeManager.isApplying { return false }
+            processing = true
+            statusMessage = ""
+            passcodeThemeManager.isApplying = true
+            passcodeThemeManager.progress = 0
+            passcodeThemeManager.message = "restoring originals..."
+            return true
+        }()
+        guard claimed else { return }
 
         DispatchQueue.global(qos: .userInitiated).async {
-            guard let basePath = resolveTelephonyBasePath() else {
+            defer {
                 DispatchQueue.main.async {
                     processing = false
+                    passcodeThemeManager.isApplying = false
+                }
+            }
+
+            guard let basePath = resolveTelephonyBasePath() else {
+                DispatchQueue.main.async {
                     statusMessage = "Error: TelephonyUI cache not found"
                 }
                 return
@@ -566,12 +635,12 @@ struct PasscodeView: View {
                     mgr.logmsg(msg)
                 }
                 DispatchQueue.main.async {
-                    processing = false
+                    passcodeThemeManager.progress = 1.0
+                    passcodeThemeManager.message = "Done"
                     statusMessage = "Originals restored"
                 }
             } catch {
                 DispatchQueue.main.async {
-                    processing = false
                     statusMessage = "Error: \(error.localizedDescription)"
                 }
             }
@@ -662,37 +731,12 @@ struct ImagePicker: UIViewControllerRepresentable {
                 [weak self] object, error in
                 guard let image = object as? UIImage else { return }
                 guard let self else { return }
-                let resized = self.resizeImage(
-                    image,
-                    targetHeight: 202
-                )
-                if let pngData = resized.pngData() {
+                // Keep source pixels; applyImage resizes to each TelephonyUI target's size.
+                if let pngData = image.pngData() {
                     DispatchQueue.main.async {
                         self.parent.imageData = pngData
                     }
                 }
-            }
-        }
-
-        func resizeImage(
-            _ image: UIImage,
-            targetHeight: CGFloat
-        ) -> UIImage {
-            let scale = targetHeight / image.size.height
-            let newWidth = image.size.width * scale
-            let newSize = CGSize(
-                width: newWidth,
-                height: targetHeight
-            )
-            
-            let renderer = UIGraphicsImageRenderer( size: newSize )
-            return renderer.image { _ in
-                image.draw(
-                    in: CGRect(
-                        origin: .zero,
-                        size: newSize
-                    )
-                )
             }
         }
     }

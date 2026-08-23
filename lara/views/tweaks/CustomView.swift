@@ -44,7 +44,7 @@ struct CustomView: View {
             } header: {
                 Text("Custom Path Overwrite")
             } footer: {
-                Text("This will overwrite the target file with the contents of the selected source file. Target size must be >= source size.")
+                Text("This will overwrite the target file with the contents of the selected source file. Source and target sizes must be equal (VFS same-size overwrite).")
             }
 
             Section {
@@ -90,9 +90,19 @@ struct CustomView: View {
 
     private func overwrite() {
         guard canoverwrite else { return }
-        let srcSize = (try? FileManager.default.attributesOfItem(atPath: srcpath)[.size] as? NSNumber)?.intValue ?? 0
+        let fm = FileManager.default
+        let srcSize = (try? fm.attributesOfItem(atPath: srcpath)[.size] as? NSNumber)?.intValue ?? 0
         guard srcSize > 0 else {
             mgr.logmsg("overwrite refused: empty source")
+            return
+        }
+        let tgtSize = (try? fm.attributesOfItem(atPath: target)[.size] as? NSNumber)?.intValue ?? 0
+        guard tgtSize > 0 else {
+            mgr.logmsg("overwrite refused: missing or empty target")
+            return
+        }
+        guard srcSize == tgtSize else {
+            mgr.logmsg("overwrite refused: source \(srcSize) != target \(tgtSize) (exact size required)")
             return
         }
         isoverwriting = true

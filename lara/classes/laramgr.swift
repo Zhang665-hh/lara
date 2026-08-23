@@ -26,28 +26,43 @@ private func loadMutablePropertyListDictionary(from url: URL) throws -> NSMutabl
     return dict
 }
 
-private func clearImmutableForOverwriteIfNeeded(path: String) -> String? {
+/// Flags cleared for an overwrite attempt; must be restored even if rename/VFS fails
+/// so system files are never left unexpectedly mutable on iOS 16.
+private struct ClearedImmutableFlags {
+    let path: String
+    let restore: [FileAttributeKey: Any]
+}
+
+private func clearImmutableForOverwriteIfNeeded(path: String) -> (cleared: ClearedImmutableFlags?, errorMessage: String?) {
     let majorVersion = ProcessInfo.processInfo.operatingSystemVersion.majorVersion
-    guard majorVersion == 16 else { return nil }
+    guard majorVersion == 16 else { return (nil, nil) }
 
     let fm = FileManager.default
-    guard let attributes = try? fm.attributesOfItem(atPath: path) else { return nil }
+    guard let attributes = try? fm.attributesOfItem(atPath: path) else { return (nil, nil) }
 
     var updates: [FileAttributeKey: Any] = [:]
+    var restore: [FileAttributeKey: Any] = [:]
     if (attributes[.immutable] as? NSNumber)?.boolValue == true {
         updates[.immutable] = false
+        restore[.immutable] = true
     }
     if (attributes[.appendOnly] as? NSNumber)?.boolValue == true {
         updates[.appendOnly] = false
+        restore[.appendOnly] = true
     }
-    guard !updates.isEmpty else { return nil }
+    guard !updates.isEmpty else { return (nil, nil) }
 
     do {
         try fm.setAttributes(updates, ofItemAtPath: path)
-        return nil
+        return (ClearedImmutableFlags(path: path, restore: restore), nil)
     } catch {
-        return "clear immutable failed: \(error.localizedDescription)"
+        return (nil, "clear immutable failed: \(error.localizedDescription)")
     }
+}
+
+private func restoreImmutableFlagsIfNeeded(_ cleared: ClearedImmutableFlags?) {
+    guard let cleared, !cleared.restore.isEmpty else { return }
+    try? FileManager.default.setAttributes(cleared.restore, ofItemAtPath: cleared.path)
 }
 
 final class laramgr: ObservableObject {
@@ -394,15 +409,15 @@ final class laramgr: ObservableObject {
     }
     
     private func sbxoverwrite(path: String, data: Data) -> (ok: Bool, message: String) {
-        let immutableMessage = clearImmutableForOverwriteIfNeeded(path: path)
-        let prefix = immutableMessage.map { "\($0), " } ?? ""
         // Never O_TRUNC the live target before bytes are committed. Write a sibling
         // temp, then rename over the original (or fall through for VFS same-size overwrite).
+        // Immutable/append-only clearing is owned by lara_overwritefile so flags are
+        // restored after both SBX and VFS attempts (success or failure).
         let dir = (path as NSString).deletingLastPathComponent
         let tmp = (dir as NSString).appendingPathComponent(".lara_sbx_\(UUID().uuidString).tmp")
         let fd = open(tmp, O_WRONLY | O_CREAT | O_TRUNC, 0o644)
         if fd == -1 {
-            return (false, "\(prefix)sbx temp open failed: errno=\(errno) \(String(cString: strerror(errno)))")
+            return (false, "sbx temp open failed: errno=\(errno) \(String(cString: strerror(errno)))")
         }
 
         var total = 0
@@ -418,14 +433,14 @@ final class laramgr: ObservableObject {
         if !wroteAll {
             close(fd)
             unlink(tmp)
-            return (false, "\(prefix)sbx temp write failed: errno=\(errno) \(String(cString: strerror(errno)))")
+            return (false, "sbx temp write failed: errno=\(errno) \(String(cString: strerror(errno)))")
         }
         // Durable commit before rename — matches decrypt/ST temp+rename policy.
         if fsync(fd) != 0 {
             let e = errno
             close(fd)
             unlink(tmp)
-            return (false, "\(prefix)sbx temp fsync failed: errno=\(e) \(String(cString: strerror(e)))")
+            return (false, "sbx temp fsync failed: errno=\(e) \(String(cString: strerror(e)))")
         }
         close(fd)
 
@@ -436,7 +451,7 @@ final class laramgr: ObservableObject {
         // rename into protected system paths often fails — leave the original intact
         // for VFS same-size overwrite fallback.
         unlink(tmp)
-        return (false, "\(prefix)sbx rename failed: errno=\(errno) \(String(cString: strerror(errno)))")
+        return (false, "sbx rename failed: errno=\(errno) \(String(cString: strerror(errno)))")
     }
     
     /// Nesting depth so lara_overwritefile -> vfsoverwrite* does not deadlock on the same gate.
@@ -483,20 +498,25 @@ final class laramgr: ObservableObject {
             return (false, "file overwrite already in progress")
         }
         defer { endFileOp() }
+
+        let (clearedFlags, clearError) = clearImmutableForOverwriteIfNeeded(path: target)
+        defer { restoreImmutableFlagsIfNeeded(clearedFlags) }
+        let clearPrefix = clearError.map { "\($0), " } ?? ""
         
         let result: (ok: Bool, message: String)
         if sbxready {
             do {
                 let data = try Data(contentsOf: URL(fileURLWithPath: source))
                 guard !data.isEmpty else {
-                    return (false, "refusing to overwrite with empty source: \(source)")
+                    return (false, "\(clearPrefix)refusing to overwrite with empty source: \(source)")
                 }
-                result = sbxoverwrite(path: target, data: data)
+                let sbx = sbxoverwrite(path: target, data: data)
+                result = (sbx.ok, clearPrefix + sbx.message)
             } catch {
-                result = (false, "sbx read source failed: \(error.localizedDescription)")
+                result = (false, "\(clearPrefix)sbx read source failed: \(error.localizedDescription)")
             }
         } else {
-            result = (false, "sbx not ready")
+            result = (false, "\(clearPrefix)sbx not ready")
         }
         
         if result.ok {
@@ -527,7 +547,13 @@ final class laramgr: ObservableObject {
             return (false, "file overwrite already in progress")
         }
         defer { endFileOp() }
-        let result = sbxready ? sbxoverwrite(path: target, data: data) : (false, "sbx not ready")
+
+        let (clearedFlags, clearError) = clearImmutableForOverwriteIfNeeded(path: target)
+        defer { restoreImmutableFlagsIfNeeded(clearedFlags) }
+        let clearPrefix = clearError.map { "\($0), " } ?? ""
+
+        let sbx = sbxready ? sbxoverwrite(path: target, data: data) : (false, "sbx not ready")
+        let result = (sbx.ok, clearPrefix + sbx.message)
         if result.0 {
             return result
         }
@@ -657,9 +683,8 @@ final class laramgr: ObservableObject {
                 }
             }
             if let PPHash = appList[PPbundleID]?.dataFolder {
-                for bundleID in hashes.keys {
+                for (bundleID, content) in hashes {
                     let fileName = "Nugget" + bundleID.replacingOccurrences(of: "com.apple.", with: "") + "Hash"
-                    let content = hashes[bundleID]!
                     let filePath = dataFolder + "/" + PPHash + "/Documents/" + fileName
                     try content.write(to: URL(fileURLWithPath: filePath), atomically: true, encoding: .utf8)
                     logmsg("Wrote hash \(content) to \(filePath)")
@@ -788,8 +813,8 @@ final class laramgr: ObservableObject {
     }
 
     /// Create or return a RemoteCall attached to YouTube. Safe to call before exploit is ready (returns nil).
-    /// While `rcrunning` is set (create/destroy/in-use), returns the currently published `ytProc` only —
-    /// destroy nils `ytProc` before background teardown, so callers never receive a freed object.
+    /// While `rcrunning` is set (create/destroy/in-use), returns nil — never hand out `ytProc`
+    /// without holding the session lock (UAF vs deferred `rcdestroy`).
     @discardableResult
     func ensureYouTubeRemoteCall() -> RemoteCall? {
         #if !DISABLE_REMOTECALL
@@ -800,7 +825,8 @@ final class laramgr: ObservableObject {
         // Claim the session lock first so create cannot race another ensure/rcinit
         // and orphan a live YouTube RemoteCall by overwriting ytProc.
         guard beginRCRunning() else {
-            return ytProc
+            logmsg("(rc) youtube remote call busy")
+            return nil
         }
         defer { endRCRunning() }
         if let existing = ytProc {

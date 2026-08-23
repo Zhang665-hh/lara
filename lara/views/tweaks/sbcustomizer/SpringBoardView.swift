@@ -117,8 +117,9 @@ struct SpringBoardView: View {
                                             .labelsHidden()
                                             .frame(width: 40)
                                             .onChange(of: option.color) { newcolor in
+                                                guard let sbType = option.sbType else { return }
                                                 do {
-                                                    try SpringboardColorManager.createColor(forType: option.sbType!, color: CIColor(color: UIColor(newcolor)), blur: Int(option.blur), asTemp: false)
+                                                    try SpringboardColorManager.createColor(forType: sbType, color: CIColor(color: UIColor(newcolor)), blur: Int(option.blur), asTemp: false)
                                                     print("Success")
                                                 } catch {
                                                     print(error.localizedDescription)
@@ -134,8 +135,9 @@ struct SpringBoardView: View {
                                         .foregroundColor(.secondary)
                                 }
                                 Slider(value: $option.blur, in: 0...150, step: 1.0, onEditingChanged: { _ in
+                                    guard let sbType = option.sbType else { return }
                                     do {
-                                        try SpringboardColorManager.createColor(forType: option.sbType!, color: CIColor(color: UIColor(option.color)), blur: Int(option.blur), asTemp: false)
+                                        try SpringboardColorManager.createColor(forType: sbType, color: CIColor(color: UIColor(option.color)), blur: Int(option.blur), asTemp: false)
                                         print("Success")
                                     } catch {
                                         print(error.localizedDescription)
@@ -157,11 +159,9 @@ struct SpringBoardView: View {
         for (i, option) in tweakOptions.enumerated() {
             tweakOptions[i].value = getDefaultStr(forKey: option.key)
             tweakOptions[i].selectedOption = tweakOptions[i].value
-            if option.sbType != nil {
-                if option.value == "Color" {
-                    tweakOptions[i].color = SpringboardColorManager.getColor(forType: option.sbType!)
-                    tweakOptions[i].blur = SpringboardColorManager.getBlur(forType: option.sbType!)
-                }
+            if let sbType = option.sbType, option.value == "Color" {
+                tweakOptions[i].color = SpringboardColorManager.getColor(forType: sbType)
+                tweakOptions[i].blur = SpringboardColorManager.getBlur(forType: sbType)
             }
         }
     }
@@ -188,8 +188,8 @@ struct SpringBoardView: View {
             if option.value == "Disabled" {
                 print("Applying tweak \"" + option.title + "\"")
                 var succeeded = false
-                if option.sbType != nil {
-                    succeeded = apply(option.sbType!, .gray.opacity(0), 0)
+                if let sbType = option.sbType {
+                    succeeded = apply(sbType, .gray.opacity(0), 0)
                 } else {
                     succeeded = overwriteFile(typeOfFile: option.fileType, fileIdentifier: option.key, true)
                 }
@@ -202,9 +202,9 @@ struct SpringBoardView: View {
                 
             } else if option.value == "Visible" {
                 print("Applying tweak \"" + option.title + "\"")
-                if option.sbType != nil {
-                    if option.sbType! == .switcher {
-                        let succeeded = apply(option.sbType!, .gray.opacity(1), 20, save: false)
+                if let sbType = option.sbType {
+                    if sbType == .switcher {
+                        let succeeded = apply(sbType, .gray.opacity(1), 20, save: false)
                         if succeeded {
                             print("Successfully applied tweak \"" + option.title + "\"")
                         } else {
@@ -213,7 +213,7 @@ struct SpringBoardView: View {
                         }
                     } else {
                         do {
-                            try SpringboardColorManager.revertFiles(forType: option.sbType!)
+                            try SpringboardColorManager.revertFiles(forType: sbType)
                             print("Successfully applied tweak \"" + option.title + "\"")
                         } catch {
                             print("Failed to apply tweak \"" + option.title + "\"!!!")
@@ -232,9 +232,9 @@ struct SpringBoardView: View {
                 }
                 
             } else if option.value == "Color" || option.value == "Blur" {
-                if option.sbType != nil {
+                if let sbType = option.sbType {
                     print("Applying tweak \"" + option.title + "\"")
-                    let succeeded = apply(option.sbType!, option.color, Int(option.blur))
+                    let succeeded = apply(sbType, option.color, Int(option.blur))
                     if succeeded {
                         print("Successfully applied tweak \"" + option.title + "\"")
                     } else {
