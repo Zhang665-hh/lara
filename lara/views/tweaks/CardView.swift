@@ -437,7 +437,10 @@ struct CardView: View {
             return
         }
 
-        backupifneeded(card: card)
+        guard backupifneeded(card: card) else {
+            status = "Failed to create backup — aborting overwrite"
+            return
+        }
         if writeprefersbx(path: card.imgpath, data: data) {
             clearcache(for: card)
             promptforrespring = true
@@ -447,18 +450,42 @@ struct CardView: View {
         }
     }
 
-    private func backupifneeded(card: carditem) {
-        let backuppath = card.imgpath + ".backup"
-        let fm = FileManager.default
-        if fm.fileExists(atPath: backuppath) { return }
-        if let data = readprefersbx(path: card.imgpath, maxsize: 16 * 1024 * 1024) {
-            _ = writeprefersbx(path: backuppath, data: data)
+
+    private func cardbackuppath(for card: carditem) -> String {
+        let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("CardBackups", isDirectory: true)
+        try? FileManager.default.createDirectory(at: docs, withIntermediateDirectories: true)
+        let safe = card.imgpath
+            .replacingOccurrences(of: "/", with: "_")
+            .replacingOccurrences(of: ":", with: "_")
+        return docs.appendingPathComponent(safe + ".backup").path
+    }
+
+    private func resolvecardbackup(for card: carditem) -> String? {
+        let preferred = cardbackuppath(for: card)
+        if FileManager.default.fileExists(atPath: preferred) { return preferred }
+        let legacy = card.imgpath + ".backup"
+        if FileManager.default.fileExists(atPath: legacy) { return legacy }
+        return nil
+    }
+
+    private func backupifneeded(card: carditem) -> Bool {
+        if resolvecardbackup(for: card) != nil { return true }
+        let backuppath = cardbackuppath(for: card)
+        guard let data = readprefersbx(path: card.imgpath, maxsize: 16 * 1024 * 1024) else {
+            return false
+        }
+        // Prefer Documents — VFS cannot create sibling .backup next to Wallet passes.
+        do {
+            try data.write(to: URL(fileURLWithPath: backuppath), options: .atomic)
+            return true
+        } catch {
+            return writeprefersbx(path: card.imgpath + ".backup", data: data)
         }
     }
 
     private func restoreimg(card: carditem) {
-        let backuppath = card.imgpath + ".backup"
-        guard FileManager.default.fileExists(atPath: backuppath) else {
+        guard let backuppath = resolvecardbackup(for: card) else {
             status = "No backup found"
             return
         }
@@ -503,12 +530,12 @@ struct CardView: View {
         return suffix
     }
 
-    private func backuppassjsonifneeded(card: carditem) {
+    private func backuppassjsonifneeded(card: carditem) -> Bool {
         let src = passjsonpath(for: card)
         let backup = passjsonbackuppath(for: card)
-        guard !FileManager.default.fileExists(atPath: backup) else { return }
-        guard let data = readprefersbx(path: src, maxsize: 512 * 1024) else { return }
-        _ = writeprefersbx(path: backup, data: data)
+        if FileManager.default.fileExists(atPath: backup) { return true }
+        guard let data = readprefersbx(path: src, maxsize: 512 * 1024) else { return false }
+        return writeprefersbx(path: backup, data: data)
     }
 
     private func applycardnum(card: carditem, newsuffix: String) {
@@ -516,7 +543,10 @@ struct CardView: View {
             status = "Failed to read pass.json"
             return
         }
-        backuppassjsonifneeded(card: card)
+        guard backuppassjsonifneeded(card: card) else {
+            status = "Failed to backup pass.json — aborting"
+            return
+        }
         let trimmed = newsuffix.trimmingCharacters(in: .whitespaces)
         if trimmed.isEmpty {
             json.removeValue(forKey: "primaryAccountSuffix")
@@ -560,7 +590,8 @@ struct CardView: View {
         let dir = card.dirpath
         let cachepath: String
         if dir.lowercased().hasSuffix(".pkpass") {
-            cachepath = dir.replacingOccurrences(of: "pkpass", with: "cache")
+            // Replace only the .pkpass path extension, not every "pkpass" substring.
+            cachepath = String(dir.dropLast(6)) + "cache"
         } else {
             cachepath = dir + ".cache"
         }
@@ -571,23 +602,25 @@ struct CardView: View {
 
     private func readprefersbx(path: String, maxsize: Int) -> Data? {
         if let data = try? Data(contentsOf: URL(fileURLWithPath: path), options: .mappedIfSafe) {
-            return data.count > maxsize ? data.prefix(maxsize) : data
+            // Refuse silent truncation — a partial backup can poison later restores.
+            guard data.count <= maxsize else { return nil }
+            return data
         }
         if mgr.vfsready {
+            let size = mgr.vfssize(path: path)
+            if size > Int64(maxsize) { return nil }
             return mgr.vfsread(path: path, maxSize: maxsize)
         }
         return nil
     }
 
     private func writeprefersbx(path: String, data: Data) -> Bool {
-        do {
-            print("(card) writing to \(path)")
-            try data.write(to: URL(fileURLWithPath: path), options: .atomic)
-            return true
-        } catch {
-            guard mgr.vfsready else { return false }
-            return mgr.vfsoverwritewithdata(target: path, data: data)
-        }
+        guard !data.isEmpty else { return false }
+        // Always go through the shared overwrite gate (file-op lock + iOS16 immutable restore).
+        let result = mgr.lara_overwritefile(target: path, data: data)
+        if result.ok { return true }
+        mgr.logmsg("(card) overwrite failed for \(path): \(result.message)")
+        return false
     }
 }
 

@@ -49,7 +49,7 @@ struct SantanderView: View {
                         Image(systemName: "externaldrive.trianglebadge.exclamationmark")
                             .imageScale(.large)
                         Text("File Manager Not Ready!")
-                        Text("Go back to the homepage, click Run Exploit, and then click Initalize System.")
+                        Text("Go back to the homepage, click Run Exploit, and then click Initialize System.")
                             .multilineTextAlignment(.center)
                             .font(.subheadline)
                             .foregroundStyle(.secondary)

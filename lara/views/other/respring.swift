@@ -55,8 +55,9 @@ let respringdoc = """
 
 struct respringview: UIViewRepresentable {
     func makeUIView(context: Context) -> WKWebView {
-        let ww = WKWebView()
-        WKWebpagePreferences().allowsContentJavaScript = true
+        let config = WKWebViewConfiguration()
+        config.defaultWebpagePreferences.allowsContentJavaScript = true
+        let ww = WKWebView(frame: .zero, configuration: config)
         return ww
     }
 

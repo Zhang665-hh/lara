@@ -59,7 +59,7 @@ struct OTAView: View {
             }
         }
         .navigationTitle("OTA Updates")
-        .alert("Result", isPresented: .constant(lastResult != nil)) {
+        .alert("Result", isPresented: Binding(get: { lastResult != nil }, set: { if !$0 { lastResult = nil } })) {
             Button("OK") { lastResult = nil }
         } message: {
             Text(lastResult ?? "")
@@ -69,7 +69,17 @@ struct OTAView: View {
     private func apply(disabled: Bool) {
         isWorking = true
         DispatchQueue.global(qos: .userInitiated).async {
-            let ok = ota_set_disabled(disabled)
+            var ok = false
+            let locked = self.mgr.withRCRunning {
+                ok = ota_set_disabled(disabled)
+            }
+            if !locked {
+                DispatchQueue.main.async {
+                    self.isWorking = false
+                    self.lastResult = "RemoteCall session busy"
+                }
+                return
+            }
             DispatchQueue.main.async {
                 isWorking = false
                 if ok {

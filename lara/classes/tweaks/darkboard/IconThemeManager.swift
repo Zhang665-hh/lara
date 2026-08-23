@@ -66,54 +66,90 @@ struct LaraThemedApp: Identifiable, Hashable {
     }
 
     func backupIconURL(fileName: String) -> URL {
-        originalIconsDir.appendingPathComponent(bundleIdentifier + "----" + version + "----" + fileName)
+        // Versionless path is the durable original. A versioned file must not
+        // replace it after an App Store update while icons are still themed.
+        originalIconsDir.appendingPathComponent(bundleIdentifier + "----" + fileName)
     }
 
     func backedUpIconURL(fileName: String) -> URL? {
         let fm = FileManager.default
-        let newURL = backupIconURL(fileName: fileName)
-        let oldURL = originalIconsDir.appendingPathComponent(bundleIdentifier + "----" + fileName)
+        let canonicalURL = backupIconURL(fileName: fileName)
+        let versionedURL = originalIconsDir.appendingPathComponent(bundleIdentifier + "----" + version + "----" + fileName)
 
-        if fm.fileExists(atPath: newURL.path) {
-            return newURL
-        } else if fm.fileExists(atPath: oldURL.path) {
-            return oldURL
+        if fm.fileExists(atPath: canonicalURL.path) {
+            return canonicalURL
+        } else if fm.fileExists(atPath: versionedURL.path) {
+            // Migrate legacy versioned backups into the stable location once.
+            try? fm.moveItem(at: versionedURL, to: canonicalURL)
+            if fm.fileExists(atPath: canonicalURL.path) { return canonicalURL }
+            return versionedURL
         }
         return nil
     }
 
-    func backUpPNGIcons() {
+    @discardableResult
+    func backUpPNGIcons() -> Bool {
         let fm = FileManager.default
+        var ok = true
         for pngIconPath in pngIconPaths {
-            let legacyURL = originalIconsDir.appendingPathComponent(bundleIdentifier + "----" + pngIconPath)
-            let newURL = backupIconURL(fileName: pngIconPath)
+            let versionedURL = originalIconsDir.appendingPathComponent(bundleIdentifier + "----" + version + "----" + pngIconPath)
+            let canonicalURL = backupIconURL(fileName: pngIconPath)
             let sourceURL = bundleURL.appendingPathComponent(pngIconPath)
 
             guard fm.fileExists(atPath: sourceURL.path) else { continue }
-            if fm.fileExists(atPath: newURL.path) {
+            if fm.fileExists(atPath: canonicalURL.path) {
                 continue
-            } else if fm.fileExists(atPath: legacyURL.path) {
-                try? fm.moveItem(at: legacyURL, to: newURL)
+            } else if fm.fileExists(atPath: versionedURL.path) {
+                do { try fm.moveItem(at: versionedURL, to: canonicalURL) }
+                catch { ok = false }
             } else {
-                try? fm.copyItem(at: sourceURL, to: newURL)
+                do { try fm.copyItem(at: sourceURL, to: canonicalURL) }
+                catch { ok = false }
             }
         }
+        return ok
     }
 
     func restorePNGIcons() throws {
-        for iconName in pngIconPaths {
-            guard let originalURL = backedUpIconURL(fileName: iconName) else { continue }
-            let iconURL = bundleURL.appendingPathComponent(iconName)
-            let data = try Data(contentsOf: originalURL)
-            let result = laramgr.shared.lara_overwritefile(target: iconURL.path, data: data)
-            if !result.ok {
-                throw NSError(domain: "IconThemer", code: 2, userInfo: [NSLocalizedDescriptionKey: "\(bundleIdentifier): \(result.message)"])
+        var restored: [(path: String, themed: Data)] = []
+        do {
+            for iconName in pngIconPaths {
+                guard let originalURL = backedUpIconURL(fileName: iconName) else { continue }
+                let iconURL = bundleURL.appendingPathComponent(iconName)
+                let stockData = try Data(contentsOf: originalURL)
+                // Capture current (themed) bytes for mid-list rollback before overwrite.
+                let themedData = (try? Data(contentsOf: iconURL)) ?? Data()
+                let chown1 = SantanderChown.chown(path: iconURL.path, uid: 501, gid: 501)
+                if !chown1 {
+                    throw NSError(domain: "IconThemer", code: 6, userInfo: [NSLocalizedDescriptionKey: "\(bundleIdentifier): restore chown(501) failed"])
+                }
+                defer { _ = SantanderChown.chown(path: iconURL.path, uid: 33, gid: 33) }
+                let result = laramgr.shared.lara_overwritefile(target: iconURL.path, data: stockData)
+                if !result.ok {
+                    throw NSError(domain: "IconThemer", code: 2, userInfo: [NSLocalizedDescriptionKey: "\(bundleIdentifier): \(result.message)"])
+                }
+                if !themedData.isEmpty {
+                    restored.append((iconURL.path, themedData))
+                }
+                let chown2 = SantanderChown.chown(path: iconURL.path, uid: 33, gid: 33)
+                if !chown2 {
+                    throw NSError(domain: "IconThemer", code: 6, userInfo: [NSLocalizedDescriptionKey: "\(bundleIdentifier): restore chown(33) failed"])
+                }
             }
+        } catch {
+            for item in restored.reversed() {
+                _ = SantanderChown.chown(path: item.path, uid: 501, gid: 501)
+                _ = laramgr.shared.lara_overwritefile(target: item.path, data: item.themed)
+                _ = SantanderChown.chown(path: item.path, uid: 33, gid: 33)
+            }
+            throw error
         }
     }
 
     func setPNGIcons(icon: LaraThemedIcon) throws {
         let fm = FileManager.default
+        var appliedBackups: [(path: String, data: Data)] = []
+        do {
         for iconName in pngIconPaths {
             let iconURL = bundleURL.appendingPathComponent(iconName)
             guard fm.fileExists(atPath: iconURL.path) else { continue }
@@ -158,21 +194,34 @@ struct LaraThemedApp: Identifiable, Hashable {
             }
 
             guard let cachedIcon else { continue }
+
+            let originalData = try Data(contentsOf: iconURL)
             
             let chown1 = SantanderChown.chown( path: iconURL.path, uid: 501, gid: 501)
             if(!chown1) {
                 throw NSError(domain: "IconThemer", code: 6, userInfo: [NSLocalizedDescriptionKey: "\(bundleIdentifier): 1st chown failed"])
             }
+            // Always restore mobile ownership even if overwrite fails mid-flight.
+            defer { _ = SantanderChown.chown(path: iconURL.path, uid: 33, gid: 33) }
             
             let overwrite = laramgr.shared.lara_overwritefile(target: iconURL.path, data: cachedIcon)
             if !overwrite.ok {
                 throw NSError(domain: "IconThemer", code: 6, userInfo: [NSLocalizedDescriptionKey: "\(bundleIdentifier): \(overwrite.message)"])
             }
+            appliedBackups.append((iconURL.path, originalData))
             
             let chown2 = SantanderChown.chown( path: iconURL.path, uid: 33, gid: 33)
             if(!chown2) {
                 throw NSError(domain: "IconThemer", code: 6, userInfo: [NSLocalizedDescriptionKey: "\(bundleIdentifier): 2nd chown failed"])
             }
+        }
+        } catch {
+            for item in appliedBackups.reversed() {
+                _ = SantanderChown.chown(path: item.path, uid: 501, gid: 501)
+                _ = laramgr.shared.lara_overwritefile(target: item.path, data: item.data)
+                _ = SantanderChown.chown(path: item.path, uid: 33, gid: 33)
+            }
+            throw error
         }
     }
 }
@@ -289,15 +338,23 @@ final class IconThemeManager: ObservableObject {
     func refreshThemes() {
         createDirectoriesIfNeeded()
         let contents = (try? fm.contentsOfDirectory(at: rawThemesDir, includingPropertiesForKeys: nil)) ?? []
-        themes = contents
+        let sortedThemes = contents
             .filter { $0.hasDirectoryPath }
             .map { url in
                 LaraIconTheme(name: url.lastPathComponent, iconCount: ((try? fm.contentsOfDirectory(at: url, includingPropertiesForKeys: nil)) ?? []).filter { $0.pathExtension.lowercased() == "png" }.count)
             }
             .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
 
-        selectedThemeNames.removeAll { selected in
-            !themes.contains(where: { $0.name == selected })
+        let publish = {
+            self.themes = sortedThemes
+            self.selectedThemeNames.removeAll { selected in
+                !self.themes.contains(where: { $0.name == selected })
+            }
+        }
+        if Thread.isMainThread {
+            publish()
+        } else {
+            DispatchQueue.main.sync(execute: publish)
         }
         saveSelection()
     }
@@ -357,7 +414,12 @@ final class IconThemeManager: ObservableObject {
             apps.append(app)
         }
 
-        installedApps = apps.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+        let sortedApps = apps.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+        if Thread.isMainThread {
+            installedApps = sortedApps
+        } else {
+            DispatchQueue.main.sync { self.installedApps = sortedApps }
+        }
     }
 
     func icons(forAppIDs appIDs: [String], from theme: LaraIconTheme) -> [UIImage?] {
@@ -404,6 +466,11 @@ final class IconThemeManager: ObservableObject {
                 try fm.createDirectory(at: extractDir, withIntermediateDirectories: true, attributes: nil)
                 
                 let archivePath = tempDir.appendingPathComponent("import.\(ext == "zip" ? "zip" : "theme")")
+                let attrs = try fm.attributesOfItem(atPath: workingURL.path)
+                let size = (attrs[.size] as? NSNumber)?.int64Value ?? 0
+                guard size > 0, size <= 128 * 1024 * 1024 else {
+                    throw NSError(domain: "IconTheme", code: 9, userInfo: [NSLocalizedDescriptionKey: "Theme archive too large."])
+                }
                 try Data(contentsOf: workingURL).write(to: archivePath)
                 try unzipFile(at: archivePath, to: extractDir)
                 let resolvedSource = try resolveThemeSourceDirectory(from: extractDir)
@@ -504,17 +571,40 @@ final class IconThemeManager: ObservableObject {
 
     @discardableResult
     func applyThemes() throws -> [String] {
+        // Atomically claim the apply slot on the main queue so a second tap cannot race.
+        let claimed: Bool = {
+            let claim = {
+                if self.isApplying { return false }
+                self.isApplying = true
+                self.applyProgress = 0
+                self.applyMessage = "Preparing icon changes..."
+                return true
+            }
+            if Thread.isMainThread { return claim() }
+            return DispatchQueue.main.sync(execute: claim)
+        }()
+        guard claimed else {
+            throw NSError(
+                domain: "IconThemeManager",
+                code: 1,
+                userInfo: [NSLocalizedDescriptionKey: "Icon theme apply is already in progress."]
+            )
+        }
+
         createDirectoriesIfNeeded()
         let changes = try neededChanges()
         let changeCount = max(Double(changes.count), 1.0)
         var errors: [String] = []
         var themedCount = 0
-
-        DispatchQueue.main.async {
-            self.isApplying = true
-            self.applyProgress = 0
-            self.applyMessage = "Preparing icon changes..."
-        }
+        // True once we claim pendingFixup before a write. Must not clear the flag
+        // at the end if a later throw left themedCount at 0 after partial writes.
+        var claimedPendingFixup = false
+        // Apps successfully themed this pass — roll back on a later hard failure.
+        var successfullyThemed: [LaraThemedApp] = []
+        // Apps successfully restored (clear-theme pass) — stop on mid-list restore failure
+        // so we do not leave half-restored / half-themed icons with a cleared cache.
+        var successfullyRestored: [LaraThemedApp] = []
+        var abortedRestorePass = false
 
         defer {
             DispatchQueue.main.async {
@@ -523,6 +613,7 @@ final class IconThemeManager: ObservableObject {
         }
 
         for (index, change) in changes.enumerated() {
+            var stopApply = false
             autoreleasepool {
                 DispatchQueue.main.async {
                     self.applyProgress = Double(index) / changeCount
@@ -531,44 +622,114 @@ final class IconThemeManager: ObservableObject {
 
                 do {
                     if let icon = change.icon {
-                        themedCount += 1
-                        change.app.backUpPNGIcons()
+                        guard change.app.backUpPNGIcons() else {
+                            errors.append("\(change.app.name): backup failed — skipping theme apply")
+                            return
+                        }
                         try? fm.createDirectory(at: processedThemesDir.appendingPathComponent(icon.themeName), withIntermediateDirectories: true, attributes: nil)
+                        // Claim pendingFixup before writes so a mid-app throw after partial
+                        // icon replacement still schedules restore / fixup.
+                        UserDefaults.standard.set(true, forKey: pendingFixupKey)
+                        claimedPendingFixup = true
                         try change.app.setPNGIcons(icon: icon)
+                        // Count only after a successful write so the final flag reflects real changes.
+                        themedCount += 1
+                        successfullyThemed.append(change.app)
                     } else {
                         try change.app.restorePNGIcons()
+                        successfullyRestored.append(change.app)
                     }
                 } catch {
                     errors.append(error.localizedDescription)
+                    // Hard failure after some apps were themed: restore those apps so
+                    // SpringBoard is not left in a mixed-theme state.
+                    if !successfullyThemed.isEmpty {
+                        for app in successfullyThemed.reversed() {
+                            do { try app.restorePNGIcons() }
+                            catch { errors.append("rollback \(app.name): \(error.localizedDescription)") }
+                        }
+                        successfullyThemed.removeAll()
+                        themedCount = 0
+                        stopApply = true
+                    } else if !successfullyRestored.isEmpty {
+                        // Clear-theme pass: abort so later apps stay themed consistently
+                        // rather than half-restoring then clearing icon cache.
+                        abortedRestorePass = true
+                        stopApply = true
+                    }
                 }
             }
+            if stopApply { break }
         }
 
         DispatchQueue.main.async {
             self.applyProgress = 1.0
-            self.applyMessage = "Clearing icon cache..."
+            self.applyMessage = abortedRestorePass ? "Restore aborted" : "Clearing icon cache..."
         }
-        clearIconCache()
+        // Do not clear icon cache after a mid-list restore abort — that would strand
+        // remaining themed apps behind a wiped cache while half the list is stock.
+        if !abortedRestorePass {
+            clearIconCache()
+        }
 
-        UserDefaults.standard.set(themedCount > 0, forKey: pendingFixupKey)
+        if themedCount > 0 {
+            UserDefaults.standard.set(true, forKey: pendingFixupKey)
+        } else if !claimedPendingFixup {
+            UserDefaults.standard.set(false, forKey: pendingFixupKey)
+        }
+        // else: claimed but every write failed after the claim — keep pendingFixup.
         return errors
     }
 
     func startPendingFixupIfPossible() {
-        guard hasPendingFixup, !isFixingUp, laramgr.shared.sbxready else { return }
-        showFixupSheet = true
-        startPendingFixup()
+        guard hasPendingFixup, laramgr.shared.sbxready else { return }
+        let claimed: Bool = {
+            let claim = {
+                if self.isFixingUp { return false }
+                self.isFixingUp = true
+                self.showFixupSheet = true
+                self.fixupProgress = 0
+                self.fixupMessage = "Restoring original app icons..."
+                return true
+            }
+            if Thread.isMainThread { return claim() }
+            return DispatchQueue.main.sync(execute: claim)
+        }()
+        guard claimed else { return }
+        startPendingFixup(alreadyClaimed: true)
     }
 
     func startPendingFixup() {
-        guard hasPendingFixup, !isFixingUp else { return }
-        if installedApps.isEmpty {
-            try? refreshApps()
-        }
+        startPendingFixup(alreadyClaimed: false)
+    }
 
-        isFixingUp = true
-        fixupProgress = 0
-        fixupMessage = "Restoring original app icons..."
+    private func startPendingFixup(alreadyClaimed: Bool) {
+        if !alreadyClaimed {
+            let claimed: Bool = {
+                let claim = {
+                    guard self.hasPendingFixup, !self.isFixingUp else { return false }
+                    self.isFixingUp = true
+                    self.fixupProgress = 0
+                    self.fixupMessage = "Restoring original app icons..."
+                    return true
+                }
+                if Thread.isMainThread { return claim() }
+                return DispatchQueue.main.sync(execute: claim)
+            }()
+            guard claimed else { return }
+        } else {
+            guard hasPendingFixup else {
+                DispatchQueue.main.async { self.isFixingUp = false }
+                return
+            }
+        }
+        if installedApps.isEmpty {
+            if Thread.isMainThread {
+                try? refreshApps()
+            } else {
+                DispatchQueue.main.sync { try? self.refreshApps() }
+            }
+        }
 
         let apps = installedApps.filter { !$0.hiddenFromSpringboard && !$0.pngIconPaths.isEmpty }
         let appCount = max(Double(apps.count), 1.0)
@@ -591,7 +752,10 @@ final class IconThemeManager: ObservableObject {
                 self.fixupProgress = 1.0
                 self.fixupMessage = errors.isEmpty ? "Your apps should now function properly." : errors.joined(separator: "\n\n")
                 self.isFixingUp = false
-                UserDefaults.standard.set(false, forKey: self.pendingFixupKey)
+                // Keep pending so a partial failure can be retried after the next open.
+                if errors.isEmpty {
+                    UserDefaults.standard.set(false, forKey: self.pendingFixupKey)
+                }
             }
         }
     }
@@ -693,12 +857,13 @@ final class IconThemeManager: ObservableObject {
     }
 
     private func sanitizedThemeName(_ name: String) -> String {
-        let invalidCharacterSet = CharacterSet(charactersIn: "/:")
-            .union(.newlines)
-            .union(.illegalCharacters)
-            .union(.controlCharacters)
-        let cleaned = name.components(separatedBy: invalidCharacterSet).joined(separator: "_").trimmingCharacters(in: .whitespacesAndNewlines)
-        return cleaned.isEmpty ? "Imported Theme" : cleaned
+        let allowed = CharacterSet.alphanumerics.union(.init(charactersIn: "._- "))
+        let cleanedScalars = name.unicodeScalars.map { allowed.contains($0) ? Character($0) : "_" }
+        var cleaned = String(cleanedScalars).trimmingCharacters(in: .whitespacesAndNewlines)
+        while cleaned.contains("..") { cleaned = cleaned.replacingOccurrences(of: "..", with: "_") }
+        cleaned = cleaned.replacingOccurrences(of: "/", with: "_")
+        if cleaned.isEmpty || cleaned == "." || cleaned == ".." { return "Imported Theme" }
+        return cleaned
     }
 
     private func findIconBundlesDirectory(in root: URL) throws -> URL? {
@@ -720,6 +885,11 @@ final class IconThemeManager: ObservableObject {
             withIntermediateDirectories: true
         )
 
+        let srcAttrs = try FileManager.default.attributesOfItem(atPath: source.path)
+        let srcSize = (srcAttrs[.size] as? NSNumber)?.int64Value ?? 0
+        guard srcSize > 0, srcSize <= 128 * 1024 * 1024 else {
+            throw NSError(domain: "IconTheme", code: 9, userInfo: [NSLocalizedDescriptionKey: "Theme archive too large."])
+        }
         let archive = try ZipArchive(data: try Data(contentsOf: source))
         unzip_logmsg("zip entries: \(archive.entries.count)")
 
@@ -727,13 +897,27 @@ final class IconThemeManager: ObservableObject {
             unzip_logmsg("entry: \(entry.path)")
 
             let normalizedPath = entry.path.replacingOccurrences(of: "\\", with: "/")
-            let outputURL = destination.appendingPathComponent(normalizedPath)
+            // Reject absolute paths, empty names, and obvious traversal before joining.
+            let hasDotDot = normalizedPath.split(separator: "/").contains("..")
+            guard !normalizedPath.isEmpty,
+                  !normalizedPath.hasPrefix("/"),
+                  !normalizedPath.hasPrefix("~"),
+                  !hasDotDot else {
+                unzip_logmsg("abort unsafe path: \(normalizedPath)")
+                try? FileManager.default.removeItem(at: destination)
+                throw NSError(domain: "IconTheme", code: 11, userInfo: [NSLocalizedDescriptionKey: "Theme archive contains unsafe path: \(normalizedPath)"])
+            }
+            let outputURL = destination.appendingPathComponent(normalizedPath).standardizedFileURL
+            let destRoot = destination.standardizedFileURL.path
+            let outPath = outputURL.path
 
-            unzip_logmsg("output: \(outputURL.path)")
+            unzip_logmsg("output: \(outPath)")
 
-            guard !normalizedPath.contains("..") else {
-                unzip_logmsg("skip path traversal: \(normalizedPath)")
-                continue
+            // Ensure resolved path stays under destination (blocks .. and symlink escapes).
+            guard outPath == destRoot || outPath.hasPrefix(destRoot + "/") else {
+                unzip_logmsg("abort path traversal: \(normalizedPath)")
+                try? FileManager.default.removeItem(at: destination)
+                throw NSError(domain: "IconTheme", code: 11, userInfo: [NSLocalizedDescriptionKey: "Theme archive path escapes destination: \(normalizedPath)"])
             }
 
             if entry.isDirectory {
@@ -741,18 +925,33 @@ final class IconThemeManager: ObservableObject {
                     try FileManager.default.createDirectory(at: outputURL, withIntermediateDirectories: true)
                 } catch {
                     unzip_logmsg("mkdir fail: \(error.localizedDescription)")
+                    try? FileManager.default.removeItem(at: destination)
+                    throw error
                 }
 
             } else {
 
                 do {
                     try FileManager.default.createDirectory(at: outputURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+                    // Cap per-entry uncompressed size to blunt zip-bomb RAM spikes.
+                    let maxEntryBytes = 16 * 1024 * 1024
+                    guard entry.uncompressedSize <= maxEntryBytes else {
+                        throw NSError(domain: "IconTheme", code: 10, userInfo: [NSLocalizedDescriptionKey: "Theme entry too large: \(entry.path)"])
+                    }
                     let extracted = try archive.extract(entry)
+                    guard extracted.count <= maxEntryBytes else {
+                        throw NSError(domain: "IconTheme", code: 10, userInfo: [NSLocalizedDescriptionKey: "Theme entry inflated too large: \(entry.path)"])
+                    }
                     unzip_logmsg("extracted size: \(extracted.count)")
                     
                     try extracted.write(to: outputURL)
                     unzip_logmsg("wrote to file")
-                } catch { unzip_logmsg("extract fail: \(entry.path) to \(error.localizedDescription)") }
+                } catch {
+                    unzip_logmsg("extract fail: \(entry.path) to \(error.localizedDescription)")
+                    // Any entry failure must abort — partial themes corrupt icon apply.
+                    try? FileManager.default.removeItem(at: destination)
+                    throw error
+                }
             }
         }
 

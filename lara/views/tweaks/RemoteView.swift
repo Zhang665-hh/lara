@@ -25,6 +25,10 @@ struct RemoteView: View {
     @State private var hsColumns: Int = 4
     @State private var freakyrunning: Bool = false
     @State private var freakyseq: Int = 0
+    /// True only while this overlay owns the SpringBoard RC pin.
+    @State private var freakyPinned: Bool = false
+    /// Serializes move vs stop so unpin cannot race an in-flight overlay move.
+    private let freakyMoveQueue = DispatchQueue(label: "lara.freaky.dog.move")
 
     private var dockMaxColumns: Int { rcdockunlimited ? 50 : 10 }
 
@@ -36,8 +40,8 @@ struct RemoteView: View {
                     .textInputAutocapitalization(.never)
 
                 Button {
-                    run("Status Bar Time Format") {
-                        status_bar_time_format(mgr.sbProc, statusBarTimeFormat)
+                    run("Status Bar Time Format") { proc in
+                        status_bar_time_format(proc, statusBarTimeFormat)
                         return "status_bar_time_format() done"
                     }
                 } label: {
@@ -51,8 +55,8 @@ struct RemoteView: View {
 
             Section {
                 Button {
-                    run("Hide Icon Labels") {
-                        let hidden = hide_icon_labels(mgr.sbProc)
+                    run("Hide Icon Labels") { proc in
+                        let hidden = hide_icon_labels(proc)
                         return "hide_icon_labels() -> \(hidden)"
                     }
                 } label: {
@@ -84,8 +88,8 @@ struct RemoteView: View {
                 }
 
                 Button {
-                    run("Patch Home Screen Grid \(hsColumns)x\(hsRows)") {
-                        return patch_homescreen_grid(mgr.sbProc, Int32(hsColumns), Int32(hsRows))
+                    run("Patch Home Screen Grid \(hsColumns)x\(hsRows)") { proc in
+                        return patch_homescreen_grid(proc, Int32(hsColumns), Int32(hsRows))
                             ? "patch_homescreen_grid(\(hsColumns), \(hsRows)) -> ok"
                             : "patch_homescreen_grid(\(hsColumns), \(hsRows)) -> failed"
                     }
@@ -111,8 +115,8 @@ struct RemoteView: View {
                 }
 
                 Button {
-                    run("Apply Dock Columns=\(columns)") {
-                        let result = set_dock_icon_count(mgr.sbProc, Int32(columns))
+                    run("Apply Dock Columns=\(columns)") { proc in
+                        let result = set_dock_icon_count(proc, Int32(columns))
                         return result == 0
                             ? "set_dock_icon_count(\(columns)) -> ok"
                             : "set_dock_icon_count(\(columns)) -> failed (\(result))"
@@ -124,8 +128,8 @@ struct RemoteView: View {
 
             Section {
                 Button {
-                    run("Enable Upside Down") {
-                        let result = enable_upside_down(mgr.sbProc)
+                    run("Enable Upside Down") { proc in
+                        let result = enable_upside_down(proc)
                         return result == 0
                             ? "enable_upside_down() -> ok"
                             : "enable_upside_down() -> failed (\(result))"
@@ -137,8 +141,8 @@ struct RemoteView: View {
 
             Section {
                 Button {
-                    run("Enable Floating Dock") {
-                        let result = enable_floating_dock(mgr.sbProc)
+                    run("Enable Floating Dock") { proc in
+                        let result = enable_floating_dock(proc)
                         return result == 0
                             ? "enable_floating_dock() -> ok"
                             : "enable_floating_dock() -> failed (\(result))"
@@ -148,8 +152,8 @@ struct RemoteView: View {
                 }
                 
                 Button {
-                    run("Enable Grid App Switcher") {
-                        let result = enable_grid_app_switcher(mgr.sbProc)
+                    run("Enable Grid App Switcher") { proc in
+                        let result = enable_grid_app_switcher(proc)
                         return result == 0
                             ? "enable_grid_app_switcher() -> ok"
                             : "enable_grid_app_switcher() -> failed (\(result))"
@@ -159,8 +163,8 @@ struct RemoteView: View {
                 }
                 
                 Button {
-                    run("Enable UIKit Debug Overlay") {
-                        let result = enable_debug_overlay(mgr.sbProc)
+                    run("Enable UIKit Debug Overlay") { proc in
+                        let result = enable_debug_overlay(proc)
                         return result == 0
                             ? "enable_debug_overlay() -> ok"
                             : "enable_debug_overlay() -> failed (\(result))"
@@ -194,11 +198,18 @@ struct RemoteView: View {
                     Text("Memory Bandwidth").tag(10)
                 }
                 .onChange(of: performanceHUD) { newValue in
-                    set_performance_hud(mgr.sbProc, Int32(newValue))
+                    mgr.withSpringBoardRemoteCall { proc in
+                        let rc = set_performance_hud(proc, Int32(newValue))
+                        if rc != 0 {
+                            mgr.logmsg("(rc) set_performance_hud failed (\(rc))")
+                        }
+                    }
                 }
                 .onAppear {
-                    if mgr.rcrunning {
-                        performanceHUD = Int(get_performance_hud(mgr.sbProc))
+                    if mgr.rcready, !mgr.rcrunning {
+                        mgr.withSpringBoardRemoteCall { proc in
+                            performanceHUD = Int(get_performance_hud(proc))
+                        }
                     }
                 }
             } footer: {
@@ -219,8 +230,9 @@ struct RemoteView: View {
                                 return
                             }
                             mgr.logmsg("rc init succeeded!")
-                            mgr.eligibilitystate = euenabler_overwrite_eligibility(proc) == 0
-                            mgr.logmsg("overwrite_eligibility() returned: \(mgr.eligibilitystate! ? "success" : "failure")")
+                            let eligibilityOK = euenabler_overwrite_eligibility(proc) == 0
+                            mgr.eligibilitystate = eligibilityOK
+                            mgr.logmsg("overwrite_eligibility() returned: \(eligibilityOK ? "success" : "failure")")
                             proc.destroy()
                         }
                     } label: {
@@ -245,40 +257,58 @@ struct RemoteView: View {
                         mgr.eu2progress = 0.0
                         mgr.eu1running = true
                         mgr.eu2running = true
+                        // Serialize daemon RC sessions — both cannot hold beginRCRunning at once.
                         mgr.rcinitDaemon(serviceName: "com.apple.managedappdistributiond.xpc", process: "managedappdistributiond", migbypass: false) { proc in
                             guard let proc else {
                                 mgr.logmsg("rc init failed")
-                                mgr.eu1running = false
+                                DispatchQueue.main.async {
+                                    mgr.eu1running = false
+                                    mgr.eu2running = false
+                                }
                                 return
                             }
                             mgr.logmsg("rc init succeeded!")
                             euenabler_override_country_code(proc) { progress in
                                 DispatchQueue.main.async {
-                                    self.mgr.eu1progress = progress
+                                    if progress < 0 {
+                                        self.mgr.eu1progress = 0
+                                        self.mgr.logmsg("(rc) EU country override failed")
+                                    } else {
+                                        self.mgr.eu1progress = progress
+                                    }
                                 }
                             }
                             proc.destroy()
                             DispatchQueue.main.async {
                                 mgr.eu1running = false
                             }
-                        }
-                        // fix unable to load app info
-                        mgr.rcinitDaemon(serviceName: "com.apple.appstorecomponentsd.xpc", process: "appstorecomponentsd", migbypass: false) { proc in
-                            guard let proc else {
-                                mgr.logmsg("rc init failed")
-                                mgr.eu2running = false
-                                return
-                            }
-                            mgr.logmsg("rc init succeeded!")
-                            euenabler_override_country_code(proc) { progress in
+                            // Schedule after this completion returns so endRCRunning() has cleared the session.
+                            DispatchQueue.main.async {
+                            mgr.rcinitDaemon(serviceName: "com.apple.appstorecomponentsd.xpc", process: "appstorecomponentsd", migbypass: false) { proc in
+                                guard let proc else {
+                                    mgr.logmsg("rc init failed")
+                                    DispatchQueue.main.async {
+                                        mgr.eu2running = false
+                                    }
+                                    return
+                                }
+                                mgr.logmsg("rc init succeeded!")
+                                euenabler_override_country_code(proc) { progress in
+                                    DispatchQueue.main.async {
+                                        if progress < 0 {
+                                            self.mgr.eu2progress = 0
+                                            self.mgr.logmsg("(rc) EU country override failed")
+                                        } else {
+                                            self.mgr.eu2progress = progress
+                                        }
+                                    }
+                                }
+                                proc.destroy()
                                 DispatchQueue.main.async {
-                                    self.mgr.eu2progress = progress
+                                    mgr.eu2running = false
                                 }
                             }
-                            proc.destroy()
-                            DispatchQueue.main.async {
-                                mgr.eu2running = false
-                            }
+                            } // end deferred second-daemon schedule
                         }
                     } label: {
                         HStack {
@@ -292,7 +322,7 @@ struct RemoteView: View {
                             } else {
                                 Text("Enable Spoof EU Region")
                                 Spacer()
-                                if mgr.eu1progress + mgr.eu2progress == 2 {
+                                if mgr.eu1progress == 1.0 && mgr.eu2progress == 1.0 {
                                     Image(systemName: "checkmark.circle")
                                         .foregroundColor(.green)
                                 } else if mgr.dsattempted && mgr.dsfailed {
@@ -311,7 +341,9 @@ struct RemoteView: View {
             
             Section {
                 Button {
-                    youtube_tweak(mgr.ytProc)
+                    mgr.withYouTubeRemoteCall { proc in
+                        youtube_tweak(proc)
+                    }
                 } label: {
                     Text("Generic Youtube Tweaks")
                 }
@@ -359,7 +391,7 @@ struct RemoteView: View {
                 Toggle("MIG filter bypass", isOn: $customMigBypass)
 
                 Button {
-                    run("Custom RemoteCall \(customProcessName):\(customFunctionName)") {
+                    run("Custom RemoteCall \(customProcessName):\(customFunctionName)") { pinnedProc in
                         let process = customProcessName.trimmingCharacters(in: .whitespacesAndNewlines)
                         let function = customFunctionName.trimmingCharacters(in: .whitespacesAndNewlines)
                         guard !process.isEmpty else { return "custom: missing process name" }
@@ -382,10 +414,13 @@ struct RemoteView: View {
                             return "custom: failed to resolve \(function)"
                         }
 
-                        guard let proc = RemoteCall(process: process, useMigFilterBypass: customMigBypass) else {
-                            return "custom: RemoteCall init failed for \(process)"
+                        let lower = process.lowercased()
+                        // run() already holds the SpringBoard RC session — never nest a second
+                        // RemoteCall onto any process (dual exception ports / UAF on teardown).
+                        guard lower == "springboard" else {
+                            return "custom: refuse non-SpringBoard target while SpringBoard session is pinned (got \(process))"
                         }
-                        defer { proc.destroy() }
+                        let proc = pinnedProc
 
                         var argsCopy = args
                         let ret = function.withCString { (cName: UnsafePointer<CChar>) -> UInt64 in
@@ -516,19 +551,21 @@ struct RemoteView: View {
         }
         .navigationTitle(Text("Tweaks"))
         .onDisappear {
-            if freakyrunning, let proc = mgr.sbProc {
-                stopfreakydog(proc)
+            if freakyrunning {
+                stopfreakydog()
             }
         }
     }
 
-    private func run(_ name: String, _ work: @escaping () -> String, onComplete: ((String) -> Void)? = nil) {
-        guard mgr.rcready, !running else { return }
+    private func run(_ name: String, _ work: @escaping (RemoteCall) -> String, onComplete: ((String) -> Void)? = nil) {
+        guard mgr.rcready, !running, !mgr.rcrunning, mgr.sbProc != nil else { return }
         running = true
         mgr.logmsg("(rc) \(name)...")
 
-        DispatchQueue.global(qos: .userInitiated).async {
-            let result = work()
+        var started = false
+        mgr.withSpringBoardRemoteCallAsync({ proc in
+            started = true
+            let result = work(proc)
             DispatchQueue.main.async {
                 self.mgr.logmsg("(rc) \(result)")
                 onComplete?(result)
@@ -537,7 +574,11 @@ struct RemoteView: View {
                 }
                 self.running = false
             }
-        }
+        }, completion: {
+            if !started {
+                self.running = false
+            }
+        })
     }
 
     private func isRemoteCallFailure(_ result: String) -> Bool {
@@ -549,32 +590,37 @@ struct RemoteView: View {
     }
 
     private func togglefreakydog() {
-        guard mgr.rcready, let proc = mgr.sbProc else { return }
-
         if freakyrunning {
-            stopfreakydog(proc)
+            stopfreakydog()
+            return
+        }
+
+        guard let proc = mgr.pinSpringBoardRemoteCall() else {
+            mgr.logmsg("(rc) freaky dog unavailable (session busy or not ready)")
             return
         }
 
         let view = enable_freaky_dog_overlay(proc)
         guard view != 0 else {
             mgr.logmsg("(rc) enable_freaky_dog_overlay() failed")
+            mgr.unpinSpringBoardRemoteCall()
             return
         }
 
         let seq = freakyseq + 1
         freakyseq = seq
         freakyrunning = true
+        freakyPinned = true
         mgr.logmsg("(rc) enable_freaky_dog_overlay() -> 0x\(String(view, radix: 16))")
 
         let screen = UIScreen.main.bounds
         let maxw = max(Int(screen.width), 200)
         let maxh = max(Int(screen.height), 300)
 
-        DispatchQueue.global(qos: .userInitiated).async {
+        freakyMoveQueue.async {
             while true {
                 let shouldcontinue = DispatchQueue.main.sync { () -> Bool in
-                    self.freakyrunning && self.freakyseq == seq && self.mgr.rcready && self.mgr.sbProc != nil
+                    self.freakyrunning && self.freakyseq == seq && self.mgr.rcready
                 }
                 if !shouldcontinue {
                     break
@@ -587,7 +633,7 @@ struct RemoteView: View {
                 if result != 0 {
                     DispatchQueue.main.async {
                         self.mgr.logmsg("(rc) move_freaky_dog_overlay() failed: \(result)")
-                        self.stopfreakydog(proc)
+                        self.stopfreakydog()
                     }
                     break
                 }
@@ -597,11 +643,25 @@ struct RemoteView: View {
         }
     }
 
-    private func stopfreakydog(_ proc: RemoteCall) {
+    private func stopfreakydog() {
+        // Only tear down when this overlay owns the pin — never unpin a foreign RC session.
+        guard freakyrunning || freakyPinned else { return }
+        let shouldUnpin = freakyPinned
         freakyrunning = false
+        freakyPinned = false
         freakyseq += 1
-        let result = disable_freaky_dog_overlay(proc)
-        mgr.logmsg("(rc) disable_freaky_dog_overlay() -> \(result)")
+        // Drain the move queue so disable/unpin cannot race an in-flight move_*.
+        freakyMoveQueue.async {
+            DispatchQueue.main.async {
+                if shouldUnpin {
+                    if let proc = self.mgr.sbProc {
+                        let result = disable_freaky_dog_overlay(proc)
+                        self.mgr.logmsg("(rc) disable_freaky_dog_overlay() -> \(result)")
+                    }
+                    self.mgr.unpinSpringBoardRemoteCall()
+                }
+            }
+        }
     }
 
     private func parseRemoteCallArgs(_ text: String) -> (args: [UInt64], error: String?) {

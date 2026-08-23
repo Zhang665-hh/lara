@@ -35,6 +35,7 @@ enum styletarget: String, CaseIterable {
 struct FontPicker: View {
     @ObservedObject var mgr: laramgr
     @State private var showimporter = false
+    @State private var isapplying = false
     @State private var customfonts: [importedfont] = load()
     @StateObject private var repostore = fontrepostore()
     @State private var showrepomgr = false
@@ -100,14 +101,32 @@ struct FontPicker: View {
                     if !customfonts.isEmpty {
                         ForEach(customfonts) { font in
                             Button {
+                                guard !isapplying else { return }
                                 if !FileManager.default.fileExists(atPath: font.path) {
                                     mgr.logmsg("custom font missing: \(font.name)")
                                     customfonts.removeAll { $0.name == font.name }
                                     save(customfonts)
                                     return
                                 }
-                                let success = mgr.vfsoverwritefromlocalpath(target: selectedTarget.path, source: font.path)
-                                success ? mgr.logmsg("font changed to \(font.name)") : mgr.logmsg("failed to change font")
+                                guard fontSizesEqual(target: selectedTarget.path, source: font.path) else {
+                                    mgr.logmsg("font overwrite refused: \(font.name) size != target (exact size required)")
+                                    return
+                                }
+                                isapplying = true
+                                let target = selectedTarget.path
+                                let source = font.path
+                                let name = font.name
+                                DispatchQueue.global(qos: .userInitiated).async {
+                                    let result = mgr.lara_overwritefile(target: target, source: source)
+                                    DispatchQueue.main.async {
+                                        isapplying = false
+                                        if result.ok {
+                                            mgr.logmsg("font changed to \(name)")
+                                        } else {
+                                            mgr.logmsg("failed to change font: \(result.message)")
+                                        }
+                                    }
+                                }
                             } label: {
                                 Text(font.name)
                                     .font(viewfontfile(path: font.path, size: 17))
@@ -166,14 +185,19 @@ struct FontPicker: View {
         let dir = fm.urls(for: .documentDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("Custom")
         try? fm.createDirectory(at: dir, withIntermediateDirectories: true)
-        let dest = dir.appendingPathComponent(url.lastPathComponent)
+        guard let dest = safedownloadurl(in: dir, remoteFilename: url.lastPathComponent) else {
+            print("font import rejected unsafe filename:", url.lastPathComponent)
+            return
+        }
+        let scoped = url.startAccessingSecurityScopedResource()
+        defer { if scoped { url.stopAccessingSecurityScopedResource() } }
 
         do {
             if !fm.fileExists(atPath: dest.path) {
                 try fm.copyItem(at: url, to: dest)
             }
 
-            let name = url.deletingPathExtension().lastPathComponent
+            let name = dest.deletingPathExtension().lastPathComponent
             let font = importedfont(name: name, path: dest.path)
 
             if !customfonts.contains(where: {$0.name == name}) {
@@ -202,6 +226,17 @@ private func viewfontfile(path: String, size: CGFloat) -> Font {
     }
 
     return .system(size: size)
+}
+
+/// VFS overwrite requires exact byte equality; refuse mismatched fonts before touching system files.
+private func fontSizesEqual(target: String, source: String) -> Bool {
+    let fm = FileManager.default
+    guard let t = (try? fm.attributesOfItem(atPath: target)[.size] as? NSNumber)?.int64Value,
+          let s = (try? fm.attributesOfItem(atPath: source)[.size] as? NSNumber)?.int64Value,
+          t > 0, s > 0 else {
+        return false
+    }
+    return t == s
 }
 
 private let fontkey = "customfonts"
@@ -309,11 +344,21 @@ struct repofontrow: View {
 
         Button {
             if iddownloaded, let localurl {
-                let success = mgr.vfsoverwritefromlocalpath(
-                    target: laramgr.fontpath,
-                    source: localurl.path
+                guard !mgr.fileopinprogress else {
+                    mgr.logmsg("font overwrite refused: file op already in progress")
+                    return
+                }
+                guard fontSizesEqual(target: laramgr.fontpath, source: localurl.path) else {
+                    mgr.logmsg("font overwrite refused: \(font.name) size != system font (exact size required)")
+                    return
+                }
+                let result = mgr.lara_overwritefile(target: laramgr.fontpath, source: localurl.path
                 )
-                success ? mgr.logmsg("font changed to \(font.name)") : mgr.logmsg("failed to change font")
+                if result.ok {
+                    mgr.logmsg("font changed to \(font.name)")
+                } else {
+                    mgr.logmsg("failed to change font: \(result.message)")
+                }
             } else {
                 Task {
                     await repostore.dlfont(font, repo: repo)
@@ -322,9 +367,8 @@ struct repofontrow: View {
         } label: {
             HStack {
                 Text(font.name)
-                    .font(iddownloaded && localurl != nil
-                        ? viewfontfile(path: localurl!.path, size: 17)
-                        : .system(size: 17))
+                    .font((iddownloaded ? localurl : nil).map { viewfontfile(path: $0.path, size: 17) }
+                        ?? .system(size: 17))
                 Spacer()
                 if repostore.downloading.contains(font.url) {
                     ProgressView()
@@ -351,8 +395,20 @@ private struct repoemojirow: View {
             		mgr.logmsg("emoji font must be .ttc, got .\(localurl.pathExtension)")
             		return
         		}
-                let success = mgr.vfsoverwritefromlocalpath(target: emojipath, source: localurl.path)
-                success ? mgr.logmsg("emoji changed to \(emoji.name)") : mgr.logmsg("failed to change emojis")
+                guard !mgr.fileopinprogress else {
+                    mgr.logmsg("emoji overwrite refused: file op already in progress")
+                    return
+                }
+                guard fontSizesEqual(target: emojipath, source: localurl.path) else {
+                    mgr.logmsg("emoji overwrite refused: \(emoji.name) size != AppleColorEmoji (exact size required)")
+                    return
+                }
+                let result = mgr.lara_overwritefile(target: emojipath, source: localurl.path)
+                if result.ok {
+                    mgr.logmsg("emoji changed to \(emoji.name)")
+                } else {
+                    mgr.logmsg("failed to change emojis: \(result.message)")
+                }
             } else {
                 Task { await repostore.dlemoji(emoji, repo: repo) }
             }
@@ -484,7 +540,7 @@ private func localfonturl(repo: fontrepodata, font: fontrepofont) -> URL? {
     let docs = fm.urls(for: .documentDirectory, in: .userDomainMask)[0]
     let repoDir = docs.appendingPathComponent("FontRepos")
         .appendingPathComponent(sanitizefilename(repo.name))
-    return repoDir.appendingPathComponent(remoteurl.lastPathComponent)
+    return safedownloadurl(in: repoDir, remoteFilename: remoteurl.lastPathComponent)
 }
 
 private func localemojiurl(repo: fontrepodata, emoji: fontrepofont) -> URL? {
@@ -493,16 +549,34 @@ private func localemojiurl(repo: fontrepodata, emoji: fontrepofont) -> URL? {
     let docs = fm.urls(for: .documentDirectory, in: .userDomainMask)[0]
     let repoDir = docs.appendingPathComponent("EmojiRepos")
         .appendingPathComponent(sanitizefilename(repo.name))
-    return repoDir.appendingPathComponent(remoteurl.lastPathComponent)
+    return safedownloadurl(in: repoDir, remoteFilename: remoteurl.lastPathComponent)
 }
 
 private func sanitizefilename(_ name: String) -> String {
     let allowed = CharacterSet.alphanumerics.union(.init(charactersIn: "._-"))
     let cleaned = name.unicodeScalars.map { allowed.contains($0) ? Character($0) : "_" }
-    return String(cleaned)
+    let result = String(cleaned)
+    // Reject empty / dot-only names that could escape or collide with path traversal.
+    if result.isEmpty || result == "." || result == ".." { return "_" }
+    return result
+}
+
+/// Resolve a download destination under `directory`, rejecting path traversal via the remote filename.
+private func safedownloadurl(in directory: URL, remoteFilename: String) -> URL? {
+    let safeName = sanitizefilename((remoteFilename as NSString).lastPathComponent)
+    let dest = directory.appendingPathComponent(safeName).standardizedFileURL
+    let root = directory.standardizedFileURL.path
+    guard dest.path.hasPrefix(root.hasSuffix("/") ? root : root + "/") || dest.path == root else {
+        return nil
+    }
+    return dest
 }
 
 final class fontrepostore: ObservableObject {
+    /// Cap auto-downloads so a hostile repo JSON cannot fill the container.
+    private static let maxAutoFontDownloads = 40
+    private static let maxFontBytes: Int64 = 32 * 1024 * 1024
+
     @Published var repos: [fontrepostate] = []
     @Published var downloading: Set<String> = []
 
@@ -536,7 +610,7 @@ final class fontrepostore: ObservableObject {
                         let repo = repodata
                         Task {
                             await self.ensurerepofontsdownloaded(repo)
-                            await MainActor.run {
+                            _ = await MainActor.run {
                                 self.pendingdownload.remove(url)
                             }
                         }
@@ -551,7 +625,7 @@ final class fontrepostore: ObservableObject {
 
     func addrepo(_ urlString: String) async {
         let trimmed = urlString.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty, URL(string: trimmed) != nil else { return }
+        guard !trimmed.isEmpty, let url = URL(string: trimmed), url.scheme?.lowercased() == "https" else { return }
         guard !repourls.contains(trimmed) else { return }
         repourls.append(trimmed)
         saverepourls(repourls)
@@ -579,33 +653,89 @@ final class fontrepostore: ObservableObject {
     }
 
     func ensurerepofontsdownloaded(_ repo: fontrepodata) async {
+        var remaining = Self.maxAutoFontDownloads
         for font in repo.fonts {
+            guard remaining > 0 else { break }
             guard let localurl = localfonturl(repo: repo, font: font) else { continue }
             if FileManager.default.fileExists(atPath: localurl.path) {
                 continue
             }
             await dlfont(font, repo: repo)
+            remaining -= 1
         }
     }
 
+
+    private func isAllowedFontHost(_ remote: URL, repoURL: String) -> Bool {
+        guard let remoteHost = remote.host?.lowercased() else { return false }
+        if let repoHost = URL(string: repoURL)?.host?.lowercased(), remoteHost == repoHost {
+            return true
+        }
+        return remoteHost == "raw.githubusercontent.com" || remoteHost.hasSuffix(".githubusercontent.com")
+    }
+
+    private func downloadRemoteFile(from remoteurl: URL, to localurl: URL, allowedHost: String? = nil) async throws {
+        guard let scheme = remoteurl.scheme?.lowercased(), scheme == "https" else {
+            throw URLError(.unsupportedURL)
+        }
+        if let allowedHost, let host = remoteurl.host,
+           host.caseInsensitiveCompare(allowedHost) != .orderedSame {
+            throw URLError(.unsupportedURL)
+        }
+        let (tempurl, response) = try await URLSession.shared.download(from: remoteurl)
+        // URLSession follows redirects — reject if the final URL left the allowlist.
+        if let finalURL = response.url {
+            guard finalURL.scheme?.lowercased() == "https" else {
+                try? FileManager.default.removeItem(at: tempurl)
+                throw URLError(.unsupportedURL)
+            }
+            if let allowedHost, let finalHost = finalURL.host,
+               finalHost.caseInsensitiveCompare(allowedHost) != .orderedSame {
+                try? FileManager.default.removeItem(at: tempurl)
+                throw URLError(.unsupportedURL)
+            }
+            if allowedHost == nil, let repoHint = response.url {
+                // When called without an explicit host pin, still require githubusercontent
+                // or same-host HTTPS (defense in depth against open redirects).
+                let host = (repoHint.host ?? "").lowercased()
+                let ok = host == "raw.githubusercontent.com" || host.hasSuffix(".githubusercontent.com")
+                if !ok {
+                    try? FileManager.default.removeItem(at: tempurl)
+                    throw URLError(.unsupportedURL)
+                }
+            }
+        }
+        if let http = response as? HTTPURLResponse, !(200...299).contains(http.statusCode) {
+            throw URLError(.badServerResponse)
+        }
+        let attrs = try FileManager.default.attributesOfItem(atPath: tempurl.path)
+        let size = (attrs[.size] as? NSNumber)?.int64Value ?? 0
+        guard size > 0, size <= Self.maxFontBytes else {
+            try? FileManager.default.removeItem(at: tempurl)
+            throw URLError(.dataLengthExceedsMaximum)
+        }
+        let fm = FileManager.default
+        try fm.createDirectory(at: localurl.deletingLastPathComponent(), withIntermediateDirectories: true)
+        if fm.fileExists(atPath: localurl.path) {
+            try fm.removeItem(at: localurl)
+        }
+        try fm.moveItem(at: tempurl, to: localurl)
+    }
+
     func dlfont(_ font: fontrepofont, repo: fontrepodata) async {
-        await MainActor.run { downloading.insert(font.url) }
+        _ = await MainActor.run { downloading.insert(font.url) }
         defer { Task { @MainActor in downloading.remove(font.url) } }
 
         guard let remoteurl = URL(string: font.url) else { return }
         guard let localurl = localfonturl(repo: repo, font: font) else { return }
         if FileManager.default.fileExists(atPath: localurl.path) { return }
+        let repoURL = repos.first(where: { $0.data?.name == repo.name })?.url ?? ""
+        guard isAllowedFontHost(remoteurl, repoURL: repoURL) else { return }
 
         do {
-            let (tempurl, _) = try await URLSession.shared.download(from: remoteurl)
-            let fm = FileManager.default
-            try fm.createDirectory(at: localurl.deletingLastPathComponent(), withIntermediateDirectories: true)
-            if fm.fileExists(atPath: localurl.path) {
-                try fm.removeItem(at: localurl)
-            }
-            try fm.moveItem(at: tempurl, to: localurl)
+            try await downloadRemoteFile(from: remoteurl, to: localurl, allowedHost: remoteurl.host)
         } catch {
-            await MainActor.run {
+            _ = await MainActor.run {
                 if let idx = repos.firstIndex(where: { $0.data?.name == repo.name }) {
                     repos[idx].error = error.localizedDescription
                 }
@@ -614,23 +744,19 @@ final class fontrepostore: ObservableObject {
     }
 
     func dlemoji(_ emoji: fontrepofont, repo: fontrepodata) async {
-        await MainActor.run { downloading.insert(emoji.url) }
+        _ = await MainActor.run { downloading.insert(emoji.url) }
         defer { Task { @MainActor in downloading.remove(emoji.url) } }
 
         guard let remoteurl = URL(string: emoji.url) else { return }
         guard let localurl = localemojiurl(repo: repo, emoji: emoji) else { return }
         if FileManager.default.fileExists(atPath: localurl.path) { return }
+        let repoURL = repos.first(where: { $0.data?.name == repo.name })?.url ?? ""
+        guard isAllowedFontHost(remoteurl, repoURL: repoURL) else { return }
 
         do {
-            let (tempurl, _) = try await URLSession.shared.download(from: remoteurl)
-            let fm = FileManager.default
-            try fm.createDirectory(at: localurl.deletingLastPathComponent(), withIntermediateDirectories: true)
-            if fm.fileExists(atPath: localurl.path) {
-                try fm.removeItem(at: localurl)
-            }
-            try fm.moveItem(at: tempurl, to: localurl)
+            try await downloadRemoteFile(from: remoteurl, to: localurl, allowedHost: remoteurl.host)
         } catch {
-            await MainActor.run {
+            _ = await MainActor.run {
                 if let idx = repos.firstIndex(where: { $0.data?.name == repo.name }) {
                     repos[idx].error = error.localizedDescription
                 }
@@ -639,10 +765,29 @@ final class fontrepostore: ObservableObject {
     }
 
     private func fetchrepo(_ urlString: String) async throws -> fontrepodata {
-        guard let repourl = URL(string: urlString) else {
-            throw URLError(.badURL)
+        guard let repourl = URL(string: urlString), repourl.scheme?.lowercased() == "https" else {
+            throw URLError(.unsupportedURL)
         }
-        let (repodata, _) = try await URLSession.shared.data(from: repourl)
+        let (repodata, response) = try await URLSession.shared.data(from: repourl)
+        // URLSession follows redirects — pin the final host the same way downloads do.
+        if let finalURL = response.url {
+            guard finalURL.scheme?.lowercased() == "https" else {
+                throw URLError(.unsupportedURL)
+            }
+            let host = (finalURL.host ?? "").lowercased()
+            let initialHost = (repourl.host ?? "").lowercased()
+            let ok = host == initialHost ||
+                host == "raw.githubusercontent.com" ||
+                host.hasSuffix(".githubusercontent.com")
+            guard ok else { throw URLError(.unsupportedURL) }
+        }
+        if let http = response as? HTTPURLResponse, !(200...299).contains(http.statusCode) {
+            throw URLError(.badServerResponse)
+        }
+        // Cap repo JSON size — fonts themselves are already size-limited on download.
+        guard repodata.count <= 2 * 1024 * 1024 else {
+            throw URLError(.dataLengthExceedsMaximum)
+        }
         return try JSONDecoder().decode(fontrepodata.self, from: repodata)
     }
 }

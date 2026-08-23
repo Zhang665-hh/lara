@@ -63,6 +63,17 @@ final class IconThemeGalleryManager: ObservableObject {
             let baseURL = try await fetchServerBaseURL(forceRefresh: forceRefresh)
             let url = baseURL.appendingPathComponent("icon-themes.json")
             let (data, response) = try await session.data(from: url)
+            // URLSession follows redirects — keep catalog traffic on the gallery host.
+            if let finalURL = response.url {
+                guard finalURL.scheme?.lowercased() == "https",
+                      let finalHost = finalURL.host, let baseHost = baseURL.host,
+                      finalHost.caseInsensitiveCompare(baseHost) == .orderedSame else {
+                    throw NSError(domain: "IconThemeGallery", code: 7, userInfo: [NSLocalizedDescriptionKey: "Theme catalog redirected off the gallery host."])
+                }
+            }
+            guard data.count <= 2 * 1024 * 1024 else {
+                throw NSError(domain: "IconThemeGallery", code: 6, userInfo: [NSLocalizedDescriptionKey: "Theme catalog too large."])
+            }
             guard let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode == 200 else {
                 throw NSError(domain: "IconThemeGallery", code: 1, userInfo: [NSLocalizedDescriptionKey: "Could not fetch the Cowabunga theme gallery."])
             }
@@ -96,10 +107,13 @@ final class IconThemeGalleryManager: ObservableObject {
     }
 
     func previewURL(for theme: GalleryTheme) -> URL? {
-        guard let serverBaseURL else {
-            return URL(string: theme.preview)
+        guard let serverBaseURL else { return nil }
+        guard let url = URL(string: theme.preview, relativeTo: serverBaseURL)?.absoluteURL else { return nil }
+        if let baseHost = serverBaseURL.host, let urlHost = url.host,
+           baseHost.caseInsensitiveCompare(urlHost) != .orderedSame {
+            return nil
         }
-        return URL(string: theme.preview, relativeTo: serverBaseURL)?.absoluteURL
+        return url
     }
 
     func isDownloading(_ theme: GalleryTheme) -> Bool {
@@ -114,8 +128,24 @@ final class IconThemeGalleryManager: ObservableObject {
 
         let remoteURL = try await absoluteURL(for: theme.url)
         let (temporaryURL, response) = try await session.download(from: remoteURL)
+        // URLSession follows redirects — keep the final host on the gallery base.
+        if let finalURL = response.url, let baseURL = serverBaseURL {
+            guard finalURL.scheme?.lowercased() == "https",
+                  let finalHost = finalURL.host, let baseHost = baseURL.host,
+                  finalHost.caseInsensitiveCompare(baseHost) == .orderedSame else {
+                try? FileManager.default.removeItem(at: temporaryURL)
+                throw NSError(domain: "IconThemeGallery", code: 7, userInfo: [NSLocalizedDescriptionKey: "Download redirected off the gallery host."])
+            }
+        }
         guard let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode == 200 else {
             throw NSError(domain: "IconThemeGallery", code: 2, userInfo: [NSLocalizedDescriptionKey: "Could not download \(theme.name)."])
+        }
+        let attrs = try FileManager.default.attributesOfItem(atPath: temporaryURL.path)
+        let size = (attrs[.size] as? NSNumber)?.int64Value ?? 0
+        let maxBytes: Int64 = 128 * 1024 * 1024
+        guard size > 0, size <= maxBytes else {
+            try? FileManager.default.removeItem(at: temporaryURL)
+            throw NSError(domain: "IconThemeGallery", code: 5, userInfo: [NSLocalizedDescriptionKey: "Theme archive too large."])
         }
 
         let fileExtension = remoteURL.pathExtension.isEmpty ? "zip" : remoteURL.pathExtension
@@ -132,6 +162,10 @@ final class IconThemeGalleryManager: ObservableObject {
         guard let url = URL(string: relativePath, relativeTo: baseURL)?.absoluteURL else {
             throw NSError(domain: "IconThemeGallery", code: 3, userInfo: [NSLocalizedDescriptionKey: "Invalid gallery URL for \(relativePath)."])
         }
+        // Reject absolute third-party hosts injected via gallery JSON.
+        if let baseHost = baseURL.host, let urlHost = url.host, baseHost.caseInsensitiveCompare(urlHost) != .orderedSame {
+            throw NSError(domain: "IconThemeGallery", code: 4, userInfo: [NSLocalizedDescriptionKey: "Theme URL host mismatch."])
+        }
         return url
     }
 
@@ -140,8 +174,20 @@ final class IconThemeGalleryManager: ObservableObject {
             return serverBaseURL
         }
 
-        let commitURL = URL(string: "https://api.github.com/repos/leminlimez/Cowabunga-explore-repo/commits/main")!
+        guard let commitURL = URL(string: "https://api.github.com/repos/leminlimez/Cowabunga-explore-repo/commits/main") else {
+            throw NSError(domain: "IconThemeGallery", code: 3, userInfo: [NSLocalizedDescriptionKey: "Invalid gallery commits URL."])
+        }
         let (data, response) = try await session.data(from: commitURL)
+        // URLSession follows redirects — pin the commits API to api.github.com.
+        if let finalURL = response.url {
+            guard finalURL.scheme?.lowercased() == "https",
+                  (finalURL.host ?? "").lowercased() == "api.github.com" else {
+                throw NSError(domain: "IconThemeGallery", code: 7, userInfo: [NSLocalizedDescriptionKey: "Gallery metadata redirected off api.github.com."])
+            }
+        }
+        guard data.count <= 1024 * 1024 else {
+            throw NSError(domain: "IconThemeGallery", code: 6, userInfo: [NSLocalizedDescriptionKey: "Commit metadata too large."])
+        }
         guard let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode == 200 else {
             throw NSError(domain: "IconThemeGallery", code: 4, userInfo: [NSLocalizedDescriptionKey: "Could not reach the Cowabunga gallery repository."])
         }

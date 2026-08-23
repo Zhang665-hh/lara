@@ -26,27 +26,47 @@ private func loadMutablePropertyListDictionary(from url: URL) throws -> NSMutabl
     return dict
 }
 
-private func clearImmutableForOverwriteIfNeeded(path: String) -> String? {
+/// Flags cleared for an overwrite attempt; must be restored even if rename/VFS fails
+/// so system files are never left unexpectedly mutable on iOS 16.
+private struct ClearedImmutableFlags {
+    let path: String
+    let restore: [FileAttributeKey: Any]
+}
+
+private func clearImmutableForOverwriteIfNeeded(path: String) -> (cleared: ClearedImmutableFlags?, errorMessage: String?) {
     let majorVersion = ProcessInfo.processInfo.operatingSystemVersion.majorVersion
-    guard majorVersion == 16 else { return nil }
+    guard majorVersion == 16 else { return (nil, nil) }
 
     let fm = FileManager.default
-    guard let attributes = try? fm.attributesOfItem(atPath: path) else { return nil }
+    guard let attributes = try? fm.attributesOfItem(atPath: path) else { return (nil, nil) }
 
     var updates: [FileAttributeKey: Any] = [:]
+    var restore: [FileAttributeKey: Any] = [:]
     if (attributes[.immutable] as? NSNumber)?.boolValue == true {
         updates[.immutable] = false
+        restore[.immutable] = true
     }
     if (attributes[.appendOnly] as? NSNumber)?.boolValue == true {
         updates[.appendOnly] = false
+        restore[.appendOnly] = true
     }
-    guard !updates.isEmpty else { return nil }
+    guard !updates.isEmpty else { return (nil, nil) }
 
     do {
         try fm.setAttributes(updates, ofItemAtPath: path)
-        return nil
+        return (ClearedImmutableFlags(path: path, restore: restore), nil)
     } catch {
-        return "clear immutable failed: \(error.localizedDescription)"
+        return (nil, "clear immutable failed: \(error.localizedDescription)")
+    }
+}
+
+private func restoreImmutableFlagsIfNeeded(_ cleared: ClearedImmutableFlags?) {
+    guard let cleared, !cleared.restore.isEmpty else { return }
+    do {
+        try FileManager.default.setAttributes(cleared.restore, ofItemAtPath: cleared.path)
+    } catch {
+        // Prefer noise over silent half-open mutable system files after a successful overwrite.
+        print("(lara) restore immutable failed for \(cleared.path): \(error.localizedDescription)")
     }
 }
 
@@ -92,7 +112,12 @@ final class laramgr: ObservableObject {
     @Published var showLogs: Bool = false
     
     var sbProc: RemoteCall?
-    var ytProc = RemoteCall(process: "youtube", useMigFilterBypass: false)
+    /// Lazily created; never eager-init at mgr construction (RemoteCall init can return nil / trap).
+    var ytProc: RemoteCall?
+    /// When true, `rcdestroy` was requested while `rcrunning` and should run once the session is idle.
+    private var rcdestroyPending: Bool = false
+    /// Completion to invoke when a deferred rcdestroy finally runs.
+    private var rcdestroyPendingCompletion: (() -> Void)? = nil
     
     static let shared = laramgr()
     static let fontpath = "/System/Library/Fonts/Core/SFUI.ttf"
@@ -148,10 +173,7 @@ final class laramgr: ObservableObject {
                     globallogger.log("(ds) exploit success!")
                     globallogger.log(String(format: "(ds) kernel_base:  0x%llx", self.kernbase))
                     globallogger.log(String(format: "(ds) kernel_slide: 0x%llx", self.kernslide))
-                    DispatchQueue.global(qos: .background).asyncAfter(deadline: .now() + 2.0) {
-                    }
-                    // =====================================================
-globallogger.divider()
+                    globallogger.divider()
                 } else {
                     self.dsfailed = true
                     self.logmsg("\nexploit failed.\n")
@@ -338,6 +360,11 @@ globallogger.divider()
             print("(vfs) not ready")
             return false
         }
+        guard beginFileOp() else {
+            print("(vfs) file overwrite already in progress")
+            return false
+        }
+        defer { endFileOp() }
         
         guard FileManager.default.fileExists(atPath: source) else {
             print("(vfs) source file not found: \(source)")
@@ -359,22 +386,45 @@ globallogger.divider()
     
     func vfsoverwritewithdata(target: String, data: Data) -> Bool {
         guard vfsready else { return false }
+        guard beginFileOp() else { return false }
+        defer { endFileOp() }
         let tmp = NSTemporaryDirectory() + "vfs_src_\(arc4random()).bin"
-        do { try data.write(to: URL(fileURLWithPath: tmp)) } catch { return false }
+        // Durable temp before mmap-based VFS overwrite (crash mid-write must not feed a partial source).
+        let fd = open(tmp, O_WRONLY | O_CREAT | O_TRUNC | O_EXCL, 0o600)
+        guard fd >= 0 else { return false }
+        let wroteOK = data.withUnsafeBytes { raw -> Bool in
+            guard let base = raw.baseAddress else { return raw.count == 0 }
+            var off = 0
+            while off < raw.count {
+                let n = write(fd, base.advanced(by: off), raw.count - off)
+                if n <= 0 { return false }
+                off += n
+            }
+            return true
+        }
+        if !wroteOK || fsync(fd) != 0 {
+            close(fd)
+            unlink(tmp)
+            return false
+        }
+        close(fd)
         let ok = vfsoverwritefromlocalpath(target: target, source: tmp)
-        try? FileManager.default.removeItem(atPath: tmp)
+        unlink(tmp)
         return ok
     }
     
     private func sbxoverwrite(path: String, data: Data) -> (ok: Bool, message: String) {
-        let immutableMessage = clearImmutableForOverwriteIfNeeded(path: path)
-        let fd = open(path, O_WRONLY | O_CREAT | O_TRUNC, 0o644)
+        // Never O_TRUNC the live target before bytes are committed. Write a sibling
+        // temp, then rename over the original (or fall through for VFS same-size overwrite).
+        // Immutable/append-only clearing is owned by lara_overwritefile so flags are
+        // restored after both SBX and VFS attempts (success or failure).
+        let dir = (path as NSString).deletingLastPathComponent
+        let tmp = (dir as NSString).appendingPathComponent(".lara_sbx_\(UUID().uuidString).tmp")
+        let fd = open(tmp, O_WRONLY | O_CREAT | O_TRUNC | O_EXCL, 0o644)
         if fd == -1 {
-            let prefix = immutableMessage.map { "\($0), " } ?? ""
-            return (false, "\(prefix)sbx open failed: errno=\(errno) \(String(cString: strerror(errno)))")
+            return (false, "sbx temp open failed: errno=\(errno) \(String(cString: strerror(errno)))")
         }
-        defer { close(fd) }
-        
+
         var total = 0
         let wroteAll = data.withUnsafeBytes { ptr -> Bool in
             guard let base = ptr.baseAddress else { return ptr.count == 0 }
@@ -385,34 +435,104 @@ globallogger.divider()
             }
             return true
         }
-        
         if !wroteAll {
-            return (false, "sbx write failed: errno=\(errno) \(String(cString: strerror(errno)))")
+            close(fd)
+            unlink(tmp)
+            return (false, "sbx temp write failed: errno=\(errno) \(String(cString: strerror(errno)))")
+        }
+        // Durable commit before rename — matches decrypt/ST temp+rename policy.
+        if fsync(fd) != 0 {
+            let e = errno
+            close(fd)
+            unlink(tmp)
+            return (false, "sbx temp fsync failed: errno=\(e) \(String(cString: strerror(e)))")
+        }
+        close(fd)
+
+        if rename(tmp, path) == 0 {
+            return (true, "ok (\(total) bytes)")
         }
 
-        if ftruncate(fd, off_t(total)) != 0 {
-            return (false, "sbx truncate failed: errno=\(errno) \(String(cString: strerror(errno)))")
-        }
-        
-        return (true, "ok (\(total) bytes)")
+        // rename into protected system paths often fails — leave the original intact
+        // for VFS same-size overwrite fallback.
+        unlink(tmp)
+        return (false, "sbx rename failed: errno=\(errno) \(String(cString: strerror(errno)))")
     }
     
+    /// Nesting depth so lara_overwritefile -> vfsoverwrite* does not deadlock on the same gate.
+    private var fileOpDepth: Int = 0
+    /// Recursive lock: same-thread VFS nesting is allowed; concurrent top-level callers are refused.
+    private let fileOpLock = NSRecursiveLock()
+
+    /// Publish `fileopinprogress` without blocking main on a held overwrite lock.
+    /// If the lock is busy, report busy=true (conservative); otherwise read depth.
+    private func scheduleFileOpProgressPublish() {
+        let apply: () -> Void = { [weak self] in
+            guard let self else { return }
+            let busy: Bool
+            if self.fileOpLock.try() {
+                busy = self.fileOpDepth > 0
+                self.fileOpLock.unlock()
+            } else {
+                // Another thread holds an overwrite — don't stall UI waiting for it.
+                busy = true
+            }
+            self.fileopinprogress = busy
+        }
+        if Thread.isMainThread {
+            apply()
+        } else {
+            DispatchQueue.main.async(execute: apply)
+        }
+    }
+
+    /// Begin a file overwrite critical section. Returns false if another thread already holds the op.
     @discardableResult
+    private func beginFileOp() -> Bool {
+        guard fileOpLock.try() else { return false }
+        // Keep depth under the lock; never main.sync while locked (deadlock if main awaits this op).
+        fileOpDepth += 1
+        scheduleFileOpProgressPublish()
+        return true
+    }
+
+    private func endFileOp() {
+        fileOpDepth = max(0, fileOpDepth - 1)
+        scheduleFileOpProgressPublish()
+        fileOpLock.unlock()
+    }
+
+        @discardableResult
     func lara_overwritefile(target: String, source: String, fallback_vfs: Bool = true) -> (ok: Bool, message: String) {
+        guard !target.isEmpty else {
+            return (false, "refusing to overwrite empty target path")
+        }
         guard FileManager.default.fileExists(atPath: source) else {
             return (false, "source file not found: \(source)")
         }
+        guard beginFileOp() else {
+            return (false, "file overwrite already in progress")
+        }
+        defer { endFileOp() }
+
+        let (clearedFlags, clearError) = clearImmutableForOverwriteIfNeeded(path: target)
+        defer { restoreImmutableFlagsIfNeeded(clearedFlags) }
+        let clearPrefix = clearError.map { "\($0), " } ?? ""
         
         let result: (ok: Bool, message: String)
         if sbxready {
             do {
                 let data = try Data(contentsOf: URL(fileURLWithPath: source))
-                result = sbxoverwrite(path: target, data: data)
+                guard !data.isEmpty else {
+                    return (false, "\(clearPrefix)refusing to overwrite with empty source: \(source)")
+                }
+                let sbx = sbxoverwrite(path: target, data: data)
+                result = (sbx.ok, clearPrefix + sbx.message)
             } catch {
-                result = (false, "sbx read source failed: \(error.localizedDescription)")
+                result = (false, "\(clearPrefix)sbx read source failed: \(error.localizedDescription)")
             }
         } else {
-            result = (false, "sbx not ready")
+            result = (false, "\(clearPrefix)sbx not ready")
         }
         
         if result.ok {
@@ -433,8 +553,26 @@ globallogger.divider()
     
     @discardableResult
     func lara_overwritefile(target: String, data: Data, fallback_vfs: Bool = true) -> (ok: Bool, message: String) {
-        let result = sbxready ? sbxoverwrite(path: target, data: data) : (false, "sbx not ready")
-        if result.0 {
+        guard !target.isEmpty else {
+            return (false, "refusing to overwrite empty target path")
+        }
+        guard !data.isEmpty else {
+            return (false, "refusing to overwrite with empty data")
+        }
+        guard beginFileOp() else {
+            return (false, "file overwrite already in progress")
+        }
+        defer { endFileOp() }
+
+        let (clearedFlags, clearError) = clearImmutableForOverwriteIfNeeded(path: target)
+        defer { restoreImmutableFlagsIfNeeded(clearedFlags) }
+        let clearPrefix = clearError.map { "\($0), " } ?? ""
+
+        let sbx: (ok: Bool, message: String) = sbxready
+            ? sbxoverwrite(path: target, data: data)
+            : (ok: false, message: "sbx not ready")
+        let result: (ok: Bool, message: String) = (ok: sbx.ok, message: clearPrefix + sbx.message)
+        if result.ok {
             return result
         }
 
@@ -443,14 +581,21 @@ globallogger.divider()
         }
         
         guard vfsready else {
-            return (false, result.1 + ", vfs not ready")
+            return (ok: false, message: result.message + ", vfs not ready")
         }
         
         let ok = vfsoverwritewithdata(target: target, data: data)
-        return ok ? (true, "vfs overwrite ok") : (false, result.1 + ", vfs overwrite failed")
+        return ok
+            ? (ok: true, message: "vfs overwrite ok")
+            : (ok: false, message: result.message + ", vfs overwrite failed")
     }
     
     func vfszeropage(at path: String, dumb: Bool) -> Bool {
+        guard beginFileOp() else {
+            self.logmsg("(vfs) file overwrite already in progress")
+            return false
+        }
+        defer { endFileOp() }
         if dumb {
             guard vfsready else {
                 self.logmsg("(vfs) zerofile failed (vfs not ready)")
@@ -558,9 +703,8 @@ globallogger.divider()
                 }
             }
             if let PPHash = appList[PPbundleID]?.dataFolder {
-                for bundleID in hashes.keys {
+                for (bundleID, content) in hashes {
                     let fileName = "Nugget" + bundleID.replacingOccurrences(of: "com.apple.", with: "") + "Hash"
-                    let content = hashes[bundleID]!
                     let filePath = dataFolder + "/" + PPHash + "/Documents/" + fileName
                     try content.write(to: URL(fileURLWithPath: filePath), atomically: true, encoding: .utf8)
                     logmsg("Wrote hash \(content) to \(filePath)")
@@ -670,8 +814,9 @@ globallogger.divider()
 
     @discardableResult
     func apfsown(path: String, uid: UInt32, gid: UInt32) -> Bool {
-        if !isapfs(path) {
-            print("\(path) is apfs!")
+        guard isapfs(path) else {
+            print("\(path) is not apfs; skipping apfs_own")
+            return false
         }
         
         let result = path.withCString { cPath in
@@ -686,29 +831,265 @@ globallogger.divider()
         print("changed owner of \(path) to \(uid):\(gid)!")
         return true
     }
+
+    /// Warm `ytProc` under the session lock. Prefer `withYouTubeRemoteCall` for use —
+    /// this API never hands out an unlocked pointer (UAF vs deferred `rcdestroy`).
+    /// Returns whether a live YouTube RemoteCall exists after the call.
+    @discardableResult
+    func ensureYouTubeRemoteCall() -> Bool {
+        #if !DISABLE_REMOTECALL
+        guard dsready else {
+            logmsg("(rc) youtube remote call requires darksword first")
+            return false
+        }
+        // Claim the session lock first so create cannot race another ensure/rcinit
+        // and orphan a live YouTube RemoteCall by overwriting ytProc.
+        guard beginRCRunning() else {
+            logmsg("(rc) youtube remote call busy")
+            return false
+        }
+        defer { endRCRunning() }
+        if ytProc != nil {
+            return true
+        }
+        let proc = RemoteCall(process: "youtube", useMigFilterBypass: false)
+        ytProc = proc
+        if proc == nil {
+            let error = RemoteCall.lastInitError()
+            if let error, !error.isEmpty {
+                logmsg("(rc) youtube remote call init failed: \(error)")
+            } else {
+                logmsg("(rc) youtube remote call init failed")
+            }
+        }
+        return proc != nil
+        #else
+        return false
+        #endif
+    }
+
+    /// Run work against the YouTube RemoteCall while holding `rcrunning` so `rcdestroy` cannot UAF it.
+    func withYouTubeRemoteCall(_ body: (RemoteCall) -> Void) {
+        #if !DISABLE_REMOTECALL
+        guard dsready else {
+            logmsg("(rc) youtube remote call requires darksword first")
+            return
+        }
+        guard beginRCRunning() else {
+            logmsg("(rc) youtube remote call busy")
+            return
+        }
+        defer { endRCRunning() }
+
+        let proc: RemoteCall?
+        if let existing = ytProc {
+            proc = existing
+        } else {
+            let created = RemoteCall(process: "youtube", useMigFilterBypass: false)
+            ytProc = created
+            proc = created
+            if created == nil {
+                let error = RemoteCall.lastInitError()
+                if let error, !error.isEmpty {
+                    logmsg("(rc) youtube remote call init failed: \(error)")
+                } else {
+                    logmsg("(rc) youtube remote call init failed")
+                }
+                return
+            }
+        }
+        guard let proc else {
+            logmsg("(rc) YouTube tweaks unavailable (process not attached)")
+            return
+        }
+        body(proc)
+        invalidateRCSessionIfNeeded(proc)
+        #endif
+    }
+
+    /// Run work against the SpringBoard RemoteCall while holding `rcrunning` so `rcdestroy` cannot UAF it.
+    func withSpringBoardRemoteCall(_ body: (RemoteCall) -> Void) {
+        #if !DISABLE_REMOTECALL
+        guard rcready else {
+            logmsg("(rc) springboard remote call not ready")
+            return
+        }
+        guard beginRCRunning() else {
+            logmsg("(rc) springboard remote call busy")
+            return
+        }
+        guard let proc = sbProc else {
+            logmsg("(rc) springboard remote call missing")
+            endRCRunning()
+            return
+        }
+        defer { endRCRunning() }
+        body(proc)
+        invalidateRCSessionIfNeeded(proc)
+        #endif
+    }
+
+    /// Async SpringBoard RC work: holds `rcrunning` until `work` finishes on a background queue.
+    func withSpringBoardRemoteCallAsync(_ work: @escaping (RemoteCall) -> Void, completion: (() -> Void)? = nil) {
+        #if !DISABLE_REMOTECALL
+        guard rcready else {
+            logmsg("(rc) springboard remote call not ready")
+            completion?()
+            return
+        }
+        guard beginRCRunning() else {
+            logmsg("(rc) springboard remote call busy")
+            completion?()
+            return
+        }
+        guard let proc = sbProc else {
+            logmsg("(rc) springboard remote call missing")
+            endRCRunning()
+            completion?()
+            return
+        }
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            work(proc)
+            DispatchQueue.main.async {
+                if let self {
+                    self.invalidateRCSessionIfNeeded(proc)
+                    self.endRCRunning()
+                } else {
+                    laramgr.shared.invalidateRCSessionIfNeeded(proc)
+                    laramgr.shared.endRCRunning()
+                }
+                completion?()
+            }
+        }
+        #else
+        completion?()
+        #endif
+    }
+
+    /// Pin the SpringBoard session for long-lived overlays (e.g. freaky dog). Pair with `unpinSpringBoardRemoteCall`.
+    @discardableResult
+    func pinSpringBoardRemoteCall() -> RemoteCall? {
+        #if !DISABLE_REMOTECALL
+        guard rcready, let proc = sbProc else { return nil }
+        // Refuse a pin on a session that already self-teardown'd mid-flight.
+        guard proc.isSessionValid else {
+            invalidateRCSessionIfNeeded(proc)
+            return nil
+        }
+        guard beginRCRunning() else { return nil }
+        return proc
+        #else
+        return nil
+        #endif
+    }
+
+    func unpinSpringBoardRemoteCall() {
+        #if !DISABLE_REMOTECALL
+        guard rcrunning else { return }
+        // Long-lived pin path never hits withSpringBoardRemoteCall's post-body
+        // invalidate — drop a dead session here so the next HUD/JIT call cannot UAF.
+        if let proc = sbProc {
+            invalidateRCSessionIfNeeded(proc)
+        }
+        endRCRunning()
+        #endif
+    }
+
+    /// Atomically claim the RC session on the main queue (same gate style as beginFileOp).
+    @discardableResult
+    private func beginRCRunning() -> Bool {
+        #if !DISABLE_REMOTECALL
+        let body: () -> Bool = {
+            if self.rcrunning { return false }
+            self.rcrunning = true
+            return true
+        }
+        if Thread.isMainThread { return body() }
+        return DispatchQueue.main.sync(execute: body)
+        #else
+        return false
+        #endif
+    }
+
+    private func endRCRunning() {
+        #if !DISABLE_REMOTECALL
+        let finish: () -> Void = {
+            self.rcrunning = false
+            if self.rcdestroyPending {
+                self.rcdestroyPending = false
+                let pendingCompletion = self.rcdestroyPendingCompletion
+                self.rcdestroyPendingCompletion = nil
+                self.rcdestroy(completion: pendingCompletion)
+            }
+        }
+        if Thread.isMainThread { finish() }
+        else { DispatchQueue.main.sync(execute: finish) }
+        #endif
+    }
+
+    /// RemoteCall may self-teardown on statereply/trap failures; drop stale session pointers.
+    private func invalidateRCSessionIfNeeded(_ proc: RemoteCall) {
+        guard !proc.isSessionValid else { return }
+        let err = proc.lastError ?? "RemoteCall session destroyed"
+        let apply: () -> Void = {
+            if proc === self.sbProc {
+                self.sbProc = nil
+                self.rcready = false
+                self.rcLastError = err
+                self.logmsg("(rc) springboard session invalidated after internal teardown")
+            }
+            if proc === self.ytProc {
+                self.ytProc = nil
+                self.rcLastError = err
+                self.logmsg("(rc) youtube session invalidated after internal teardown")
+            }
+        }
+        if Thread.isMainThread { apply() }
+        else { DispatchQueue.main.sync(execute: apply) }
+    }
     
     #if !DISABLE_REMOTECALL
+
+    /// Hold the RC session lock around arbitrary RemoteCall work (ST/OTA/launchd helpers).
+    /// Returns false if the session is already busy.
+    @discardableResult
+    func withRCRunning(_ body: () -> Void) -> Bool {
+        guard beginRCRunning() else { return false }
+        defer { endRCRunning() }
+        body()
+        return true
+    }
+
     func rcinit(process: String, migbypass: Bool = false, completion: ((Bool) -> Void)? = nil) {
         guard dsready, !rcready else {
             completion?(false)
             return
         }
+        guard beginRCRunning() else {
+            completion?(false)
+            return
+        }
         
-        rcrunning = true
         rcLastError = nil
         logmsg("initializing remote call on \(process)...")
         
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
-            self?.sbProc = RemoteCall(process: process, useMigFilterBypass: migbypass)
+            let proc = RemoteCall(process: process, useMigFilterBypass: migbypass)
             
             DispatchQueue.main.async {
-                guard let self = self else { return }
-                let success = self.sbProc != nil
+                guard let self = self else {
+                    laramgr.shared.endRCRunning()
+                    completion?(false)
+                    return
+                }
+                // Publish sbProc only on the main thread — background writes race SwiftUI / other readers.
+                self.sbProc = proc
+                let success = proc != nil
                 if success {
                     self.logmsg("remote call initialized on \(process)")
                     self.rcLastError = nil
-                    self.rcrunning = false
                     self.rcready = true
+                    self.endRCRunning()
                 } else {
                     self.logmsg("remote call init failed on \(process)")
                     let error = RemoteCall.lastInitError()
@@ -718,7 +1099,7 @@ globallogger.divider()
                     } else {
                         self.logmsg("remote call init failed on \(process)")
                     }
-                    self.rcrunning = false
+                    self.endRCRunning()
                 }
                 completion?(success)
             }
@@ -726,12 +1107,16 @@ globallogger.divider()
     }
     
     func rcinitDaemon(serviceName: String, framework: String? = nil, process: String, migbypass: Bool = false, completion: ((RemoteCall?) -> Void)? = nil) {
-        guard dsready, let sbProc else {
+        // Match rcinit/rcdestroy: refuse overlapping daemon wakes / stable calls.
+        guard dsready, rcready, let sbProc else {
+            completion?(nil)
+            return
+        }
+        guard beginRCRunning() else {
             completion?(nil)
             return
         }
         
-        rcrunning = true
         logmsg("initializing remote call on \(process)...")
         
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
@@ -741,14 +1126,18 @@ globallogger.divider()
             }
             
             let proc = RemoteCall(process: process, useMigFilterBypass: migbypass)
-            completion?(proc)
             
             DispatchQueue.main.async {
-                guard let self = self else { return }
+                guard let self = self else {
+                    laramgr.shared.invalidateRCSessionIfNeeded(sbProc)
+                    laramgr.shared.endRCRunning()
+                    completion?(nil)
+                    return
+                }
+                self.invalidateRCSessionIfNeeded(sbProc)
                 let success = proc != nil
                 if success {
                     self.logmsg("remote call initialized on \(process)")
-                    self.rcrunning = false
                 } else {
                     let error = RemoteCall.lastInitError()
                     if let error, !error.isEmpty {
@@ -756,35 +1145,80 @@ globallogger.divider()
                     } else {
                         self.logmsg("remote call init failed on \(process)")
                     }
-                    self.rcrunning = false
                 }
+                // Keep the RC session locked through the caller's daemon work so EU/ST-style
+                // completions cannot race another beginRCRunning / nested RemoteCall.
+                completion?(proc)
+                self.endRCRunning()
             }
         }
     }
     
     func rcdestroy(completion: (() -> Void)? = nil) {
-        guard rcready else { return }
+        guard rcready || sbProc != nil || ytProc != nil || rcdestroyPending else {
+            completion?()
+            return
+        }
+        // Do not tear down while rcinit / daemon wake / stable calls are in flight.
+        // Queue a real destroy for when endRCRunning() clears the session lock.
+        guard beginRCRunning() else {
+            rcdestroyPending = true
+            // Keep the latest waiter so deferred teardown still signals completion.
+            if let completion {
+                let prev = rcdestroyPendingCompletion
+                rcdestroyPendingCompletion = {
+                    prev?()
+                    completion()
+                }
+            }
+            logmsg("remote call destroy deferred: session busy")
+            // Do not invoke completion yet — caller must not assume teardown finished.
+            return
+        }
         
         logmsg("destroying remote call session...")
-        rcready = false
+        // Mutate @Published session state on the main queue only.
+        let clearPublished: () -> (RemoteCall?, RemoteCall?) = {
+            self.rcready = false
+            self.rcdestroyPending = false
+            let sb = self.sbProc
+            let yt = self.ytProc
+            self.sbProc = nil
+            self.ytProc = nil
+            return (sb, yt)
+        }
+        let (sb, yt): (RemoteCall?, RemoteCall?) = {
+            if Thread.isMainThread { return clearPublished() }
+            return DispatchQueue.main.sync(execute: clearPublished)
+        }()
         
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
-            self?.sbProc?.destroy()
+            sb?.destroy()
+            yt?.destroy()
             
             DispatchQueue.main.async {
-                self?.logmsg("remote call session destroyed")
+                // Prefer endRCRunning so a re-queued destroy during teardown is flushed.
+                if let self {
+                    self.logmsg("remote call session destroyed")
+                    self.endRCRunning()
+                } else {
+                    laramgr.shared.endRCRunning()
+                }
                 completion?()
             }
         }
     }
 
     func stashKRWToLaunchd(completion: ((Bool) -> Void)? = nil) {
-        guard dsready, !rcrunning else {
+        guard dsready else {
+            completion?(false)
+            return
+        }
+        guard beginRCRunning() else {
             completion?(false)
             return
         }
 
-        rcrunning = true
         rcLastError = nil
         logmsg("(persist) manually transferring KRW primitives to launchd...")
 
@@ -792,8 +1226,11 @@ globallogger.divider()
             let success = transfer_krw_to_launchd()
 
             DispatchQueue.main.async {
-                guard let self else { return }
-                self.rcrunning = false
+                guard let self else {
+                    laramgr.shared.endRCRunning()
+                    completion?(false)
+                    return
+                }
                 if success {
                     self.rcLastError = nil
                     self.logmsg("(persist) manual KRW transfer to launchd succeeded")
@@ -806,6 +1243,7 @@ globallogger.divider()
                         self.logmsg("(persist) manual KRW transfer to launchd failed")
                     }
                 }
+                self.endRCRunning()
                 completion?(success)
             }
         }
@@ -817,23 +1255,26 @@ globallogger.divider()
     //  - timeout: timeout in ms
     //  ret: return value from rc
     func rccall(name: String, args: [UInt64] = [], timeout: Int32 = 100) -> UInt64 {
-        guard rcready else { return 0 }
+        guard rcready, let proc = sbProc else { return 0 }
+        guard beginRCRunning() else { return 0 }
+        defer {
+            invalidateRCSessionIfNeeded(proc)
+            endRCRunning()
+        }
         let RTLD_DEFAULT = UnsafeMutableRawPointer(bitPattern: -2)
         let ptr = dlsym(RTLD_DEFAULT, name)
         var argsCopy = args
         return name.withCString { (cName: UnsafePointer<CChar>) -> UInt64 in
             UInt64(argsCopy.withUnsafeMutableBufferPointer { buffer in
-                sbProc?.doStable(
+                proc.doStable(
                     withTimeout: timeout,
                     functionName: UnsafeMutablePointer(mutating: cName),
                     functionPointer: ptr,
                     args: buffer.baseAddress,
                     argCount: UInt(args.count)
-                ) ?? 0
+                )
             })
         }
     }
     #endif
 }
-
-

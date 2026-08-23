@@ -21,7 +21,8 @@ public class Alertinator {
                 alertController?.addAction(.init(title: "OK", style: .cancel))
             }
             alertController?.view.tintColor = UIColor(named: "AccentColor")
-            self.present(alertController!)
+            guard let controller = self.alertController else { return }
+            self.present(controller)
         }
     }
     
@@ -35,7 +36,8 @@ public class Alertinator {
                 alertController?.addAction(.init(title: "Cancel", style: .cancel))
             }
             alertController?.view.tintColor = UIColor(named: "AccentColor")
-            self.present(alertController!)
+            guard let controller = self.alertController else { return }
+            self.present(controller)
         }
     }
     
@@ -59,21 +61,31 @@ public class Alertinator {
                 }
             })
             alertController?.view.tintColor = UIColor(named: "AccentColor")
-            self.present(alertController!)
+            guard let controller = self.alertController else { return }
+            self.present(controller)
         }
     }
     
     @MainActor
     private func present(_ alert: UIAlertController) {
-        if let windowScene = UIApplication.shared.connectedScenes.first as? UIWindowScene,
-           let window = windowScene.windows.first,
-           var topController = window.rootViewController {
-            
-            while let presentedViewController = topController.presentedViewController {
-                topController = presentedViewController
-            }
-            
-            topController.present(alert, animated: true)
+        guard let windowScene = UIApplication.shared.connectedScenes.first as? UIWindowScene,
+              let window = windowScene.windows.first,
+              var topController = window.rootViewController else {
+            return
         }
+
+        while let presentedViewController = topController.presentedViewController {
+            // Replace an already-visible alert instead of stacking forever.
+            if presentedViewController is UIAlertController {
+                presentedViewController.dismiss(animated: false) {
+                    topController.present(alert, animated: true)
+                }
+                return
+            }
+            topController = presentedViewController
+        }
+
+        topController.present(alert, animated: true)
     }
 }
+

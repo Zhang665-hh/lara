@@ -147,8 +147,9 @@ struct SettingsView: View {
                                 .foregroundColor(.primary)
                             
                             Text("1. Download the IPSW tool for your device.")
-                            Link("https://github.com/blacktop/ipsw/releases",
-                                 destination: URL(string: "https://github.com/blacktop/ipsw/releases")!)
+                            if let ipswURL = URL(string: "https://github.com/blacktop/ipsw/releases") {
+                                Link("https://github.com/blacktop/ipsw/releases", destination: ipswURL)
+                            }
                             
                             Text("2. Extract the archive.")
                             Text("3. Open Terminal.")
@@ -301,7 +302,10 @@ struct SettingsView: View {
         UserDefaults.standard.removeObject(forKey: "lara.kernelcache_path")
         UserDefaults.standard.removeObject(forKey: "lara.kernelcache_size")
         
-        let docsPath = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first!
+        guard let docsPath = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first else {
+            mgr.logmsg("Failed to clear kernelcache: Documents directory unavailable")
+            return
+        }
         let kernelcacheDocPath = docsPath.appendingPathComponent("kernelcache")
         
         do {

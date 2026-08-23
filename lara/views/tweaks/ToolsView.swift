@@ -254,7 +254,7 @@ struct ToolsView: View {
             }
         }
         .navigationTitle("Tools")
-        .alert("Status", isPresented: .constant(status != nil)) {
+        .alert("Status", isPresented: Binding(get: { status != nil }, set: { if !$0 { status = nil } })) {
                 Button("OK") { status = nil }
             } message: {
                 Text(status ?? "")

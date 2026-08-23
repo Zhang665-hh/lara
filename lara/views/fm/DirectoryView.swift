@@ -63,8 +63,12 @@ final class santanderdirmodel: ObservableObject {
         self.writevfs = writevfs
     }
 
+    private var loadGeneration = 0
+
     func load(query: String = "") {
         loading = true
+        loadGeneration += 1
+        let generation = loadGeneration
         let item = item
         let readsbx = readsbx
         let sort = sort
@@ -91,6 +95,8 @@ final class santanderdirmodel: ObservableObject {
             )
 
             DispatchQueue.main.async {
+                // Drop stale listings from overlapping loads (search/sort/navigate).
+                guard generation == self.loadGeneration else { return }
                 self.allitems = listing.items
                 self.shownitems = shown
                 self.emptymsg = empty
@@ -361,14 +367,16 @@ struct santanderdirview: View {
         }
         .sheet(item: $chmoditem) { entry in
             santanderchmodsheet(item: entry) { mode in
-                santanderfs.clearImmutableIfPossible(atPath: entry.path)
+                let cleared = santanderfs.clearImmutableIfPossible(atPath: entry.path)
+                defer { santanderfs.restoreImmutableIfNeeded(cleared) }
                 let ok = entry.path.withCString { apfs_mod($0, mode) == 0 }
                 msg = santandermsg(title: "Chmod", text: ok ? "Operation completed." : "Operation failed.")
             }
         }
         .sheet(item: $chownitem) { entry in
             santanderchownsheet(item: entry) { uid, gid in
-                santanderfs.clearImmutableIfPossible(atPath: entry.path)
+                let cleared = santanderfs.clearImmutableIfPossible(atPath: entry.path)
+                defer { santanderfs.restoreImmutableIfNeeded(cleared) }
                 let ok = entry.path.withCString { apfs_own($0, uid, gid) == 0 }
                 msg = santandermsg(title: "Chown", text: ok ? "Operation completed." : "Operation failed.")
             }
@@ -444,6 +452,14 @@ struct santanderdirview: View {
         msg = santandermsg(title: "Copied", text: entry.name)
     }
 
+
+    private func isSafeRelativeName(_ name: String) -> Bool {
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.isEmpty || trimmed == "." || trimmed == ".." { return false }
+        if trimmed.contains("/") { return false }
+        return true
+    }
+
     private func rename(_ entry: santanderitem, newname: String) {
         guard readsbx else {
             msg = santandermsg(title: "Rename Unavailable", text: "Rename is only supported in SBX mode.")
@@ -455,8 +471,8 @@ struct santanderdirview: View {
             msg = santandermsg(title: "Rename Failed", text: "Name cannot be empty.")
             return
         }
-        guard !trimmed.contains("/") else {
-            msg = santandermsg(title: "Rename Failed", text: "Name cannot contain '/'.")
+        guard isSafeRelativeName(trimmed) else {
+            msg = santandermsg(title: "Rename Failed", text: "Name cannot contain '/', '.', or '..'.")
             return
         }
         guard trimmed != entry.name else { return }
@@ -468,8 +484,19 @@ struct santanderdirview: View {
         }
 
         do {
-            santanderfs.clearImmutableIfPossible(atPath: entry.path)
-            try FileManager.default.moveItem(atPath: entry.path, toPath: dest)
+            let cleared = santanderfs.clearImmutableIfPossible(atPath: entry.path)
+            do {
+                try FileManager.default.moveItem(atPath: entry.path, toPath: dest)
+                // Flags travel with the inode; restore on the destination path.
+                if let cleared {
+                    santanderfs.restoreImmutableIfNeeded(
+                        santanderfs.ClearedImmutable(path: dest, restore: cleared.restore)
+                    )
+                }
+            } catch {
+                santanderfs.restoreImmutableIfNeeded(cleared)
+                throw error
+            }
             model.load(query: query.trimmingCharacters(in: .whitespacesAndNewlines))
         } catch {
             msg = santandermsg(title: "Rename Failed", text: error.localizedDescription)
@@ -487,8 +514,8 @@ struct santanderdirview: View {
             msg = santandermsg(title: "New Folder Failed", text: "Name cannot be empty.")
             return
         }
-        guard !trimmed.contains("/") else {
-            msg = santandermsg(title: "New Folder Failed", text: "Name cannot contain '/'.")
+        guard isSafeRelativeName(trimmed) else {
+            msg = santandermsg(title: "New Folder Failed", text: "Name cannot contain '/', '.', or '..'.")
             return
         }
 
@@ -517,8 +544,8 @@ struct santanderdirview: View {
             msg = santandermsg(title: "Create File Failed", text: "Name cannot be empty.")
             return
         }
-        guard !trimmed.contains("/") else {
-            msg = santandermsg(title: "Create File Failed", text: "Name cannot contain '/'.")
+        guard isSafeRelativeName(trimmed) else {
+            msg = santandermsg(title: "Create File Failed", text: "Name cannot contain '/', '.', or '..'.")
             return
         }
 
@@ -533,6 +560,25 @@ struct santanderdirview: View {
             model.load(query: query.trimmingCharacters(in: .whitespacesAndNewlines))
         } catch {
             msg = santandermsg(title: "Create File Failed", text: error.localizedDescription)
+        }
+    }
+
+
+    /// Stage to a sibling temp, then replace/move into place so a failed copy cannot leave the destination deleted.
+    private static func atomicCopy(from src: String, to dest: String, replace: Bool) throws {
+        let destURL = URL(fileURLWithPath: dest)
+        let staging = dest + ".lara_paste_\(UUID().uuidString).tmp"
+        let stagingURL = URL(fileURLWithPath: staging)
+        try FileManager.default.copyItem(atPath: src, toPath: staging)
+        defer {
+            if FileManager.default.fileExists(atPath: staging) {
+                try? santanderfs.removeItemClearingImmutable(atPath: staging)
+            }
+        }
+        if replace && FileManager.default.fileExists(atPath: dest) {
+            _ = try FileManager.default.replaceItemAt(destURL, withItemAt: stagingURL)
+        } else {
+            try FileManager.default.moveItem(at: stagingURL, to: destURL)
         }
     }
 
@@ -552,10 +598,7 @@ struct santanderdirview: View {
         let dest = replace ? base : santanderfs.uniquepath(base: base)
 
         do {
-            if replace && FileManager.default.fileExists(atPath: dest) {
-                try santanderfs.removeItemClearingImmutable(atPath: dest)
-            }
-            try FileManager.default.copyItem(atPath: clipitem.path, toPath: dest)
+            try Self.atomicCopy(from: clipitem.path, to: dest, replace: replace)
             model.load(query: query.trimmingCharacters(in: .whitespacesAndNewlines))
         } catch {
             msg = santandermsg(title: "Paste Failed", text: error.localizedDescription)
@@ -566,7 +609,7 @@ struct santanderdirview: View {
         guard let clipitem = clip.item else { return }
 
         if writevfs && !entry.isdir && !clipitem.isdir {
-            let ok = laramgr.shared.vfsoverwritefromlocalpath(target: entry.path, source: clipitem.path)
+            let ok = laramgr.shared.lara_overwritefile(target: entry.path, source: clipitem.path).ok
             if ok {
                 model.load(query: query.trimmingCharacters(in: .whitespacesAndNewlines))
             } else {
@@ -586,10 +629,7 @@ struct santanderdirview: View {
         }
 
         do {
-            if FileManager.default.fileExists(atPath: entry.path) {
-                try santanderfs.removeItemClearingImmutable(atPath: entry.path)
-            }
-            try FileManager.default.copyItem(atPath: clipitem.path, toPath: entry.path)
+            try Self.atomicCopy(from: clipitem.path, to: entry.path, replace: true)
             model.load(query: query.trimmingCharacters(in: .whitespacesAndNewlines))
         } catch {
             msg = santandermsg(title: "Replace Failed", text: error.localizedDescription)

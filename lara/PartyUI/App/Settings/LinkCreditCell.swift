@@ -23,7 +23,7 @@ public struct LinkCreditCell<Icon: View>: View {
     
     public var body: some View {
         Button(action: {
-            if !url.isEmpty { openURL(URL(string: url)!) }
+            if let open = URL(string: url) { openURL(open) }
         }) {
             HStack(spacing: spacing.creditCell) {
                 image

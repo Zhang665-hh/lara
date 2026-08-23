@@ -11,6 +11,41 @@ import PhotosUI
 import UniformTypeIdentifiers
 import Compression
 import Combine
+import CryptoKit
+
+fileprivate func passcodeDigitTokenMatches(_ stem: String, digit: String) -> Bool {
+    guard digit.count == 1, let d = digit.first, d.isNumber else { return false }
+    if stem == digit { return true }
+    let chars = Array(stem)
+    for i in chars.indices where chars[i] == d {
+        let prev = i > chars.startIndex ? chars[i - 1] : nil
+        let next = i + 1 < chars.endIndex ? chars[i + 1] : nil
+        // Reject multi-digit runs: "-10" must not match digit 0 or 1 as a lone token.
+        if let prev, prev.isNumber { continue }
+        if let next, next.isNumber { continue }
+        if prev == nil && next == nil { return true }
+        let prevSep = (prev == nil) || prev == "-" || prev == "_" || prev == "@"
+        let nextSep = (next == nil) || next == "-" || next == "_" || next == "@"
+        if prevSep && nextSep { return true }
+    }
+    return false
+}
+
+fileprivate func passcodeMatchFilenameToKey(_ filename: String) -> String? {
+        let base = (filename as NSString).lastPathComponent.lowercased()
+        let stem = (base as NSString).deletingPathExtension
+        // Exact stem "0"..."9" only — reject "10"/"01" as Int(stem) would be out of 0...9 or ambiguous.
+        if stem.count == 1, let n = Int(stem), (0...9).contains(n) { return String(n) }
+        // Scan 9...0; token boundaries prevent "-10" matching as "-0" / "-1".
+        // Do NOT use bare hasSuffix("0.png") — that maps "10.png" / "button0.png" to digit 0.
+        for i in (0...9).reversed() {
+            let s = String(i)
+            if base.contains("other-2-\(s)--dark") || passcodeDigitTokenMatches(stem, digit: s) {
+                return s
+            }
+        }
+        return nil
+    }
 
 private let passcodeThemeStorageRoot = URL(
     fileURLWithPath: "/var/mobile/.DO-NOT-DELETE-lara/PasscodeThemes",
@@ -45,7 +80,7 @@ final class PasscodeThemeManager: ObservableObject {
         )
     }
 
-    func backupIfNeeded(targetPath: String) {
+    func backupIfNeeded(targetPath: String) throws {
         createDirectoriesIfNeeded()
         let targetURL = URL(fileURLWithPath: targetPath)
         let backupURL = backupURLFor(targetPath: targetPath)
@@ -53,7 +88,7 @@ final class PasscodeThemeManager: ObservableObject {
         guard fm.fileExists(atPath: targetPath) else { return }
         
         if !fm.fileExists(atPath: backupURL.path) {
-            try? fm.copyItem(at: targetURL, to: backupURL)
+            try fm.copyItem(at: targetURL, to: backupURL)
         }
     }
 
@@ -84,40 +119,80 @@ final class PasscodeThemeManager: ObservableObject {
         for case let file as String in enumerator {
             guard file.lowercased().hasSuffix(".png") else { continue }
             let fullPath = "\(basePath)/\(file)"
-            let lower = file.lowercased()
-            for i in 0...9 {
-                if lower.contains("other-2-\(i)--dark") ||
-                   lower.contains("-\(i)-") ||
-                   lower.contains("_\(i)_") ||
-                   lower.contains("_\(i)@") {
-                    allTargets.append(fullPath)
-                    break
-                }
+            if passcodeMatchFilenameToKey(file) != nil {
+                allTargets.append(fullPath)
             }
         }
 
+        var failures: [String] = []
         for path in allTargets {
             do {
                 try restoreBackup(targetPath: path)
                 logmsg?("restored \(path)")
             } catch {
-                logmsg?("failed to restore \(path): \(error.localizedDescription)")
+                let msg = "\(path): \(error.localizedDescription)"
+                failures.append(msg)
+                logmsg?("failed to restore \(msg)")
             }
+        }
+        if !failures.isEmpty {
+            throw NSError(
+                domain: "PasscodeTheme",
+                code: 7,
+                userInfo: [NSLocalizedDescriptionKey: "restore failed for \(failures.count) file(s): \(failures.joined(separator: "; "))"]
+            )
         }
     }
 
     func applyImage(data: Data, to targetPath: String) throws {
-        backupIfNeeded(targetPath: targetPath)
-        let overwrite = laramgr.shared.lara_overwritefile(target: targetPath, data: data)
+        try backupIfNeeded(targetPath: targetPath)
 
-        if !overwrite.ok { throw NSError(domain: "PasscodeTheme", code: 2, userInfo: [NSLocalizedDescriptionKey: overwrite.message]) }
+        let targetURL = URL(fileURLWithPath: targetPath)
+        let targetData = try Data(contentsOf: targetURL)
+        guard !targetData.isEmpty else {
+            throw NSError(domain: "PasscodeTheme", code: 4,
+                          userInfo: [NSLocalizedDescriptionKey: "empty target: \(targetPath)"])
+        }
+
+        // Resize to the live TelephonyUI asset's pixel size — never force a fixed height
+        // (devices/caches differ; a hard-coded 202px produced wrong-size partial writes).
+        var payload = data
+        if let targetImage = UIImage(data: targetData),
+           let sourceImage = UIImage(data: data),
+           targetImage.size.width > 0, targetImage.size.height > 0 {
+            let resized = Self.resizeImage(sourceImage, to: targetImage.size)
+            guard let png = resized.pngData(), !png.isEmpty else {
+                throw NSError(domain: "PasscodeTheme", code: 5,
+                              userInfo: [NSLocalizedDescriptionKey: "failed to encode resized passcode image"])
+            }
+            payload = png
+        }
+
+        // VFS same-size only; SBX rename may change size. Prefer exact match when possible.
+        if payload.count != targetData.count && !laramgr.shared.sbxready {
+            throw NSError(domain: "PasscodeTheme", code: 6,
+                          userInfo: [NSLocalizedDescriptionKey:
+                            "size mismatch for \(targetPath) (\(payload.count) vs \(targetData.count)); SBX required for size-changing write"])
+        }
+
+        let overwrite = laramgr.shared.lara_overwritefile(target: targetPath, data: payload)
+        if !overwrite.ok {
+            throw NSError(domain: "PasscodeTheme", code: 2,
+                          userInfo: [NSLocalizedDescriptionKey: overwrite.message])
+        }
+    }
+
+    static func resizeImage(_ image: UIImage, to size: CGSize) -> UIImage {
+        let renderer = UIGraphicsImageRenderer(size: size)
+        return renderer.image { _ in
+            image.draw(in: CGRect(origin: .zero, size: size))
+        }
     }
 
     private func backupURLFor(targetPath: String) -> URL {
-        let sanitized = targetPath
-            .replacingOccurrences(of: "/", with: "_")
-        return passcodeBackupDir
-            .appendingPathComponent(sanitized)
+        let digest = SHA256.hash(data: Data(targetPath.utf8))
+        let hex = digest.map { String(format: "%02x", $0) }.joined()
+        return passcodeBackupDir.appendingPathComponent(hex)
     }
 }
 
@@ -275,6 +350,11 @@ struct PasscodeView: View {
             }
             
             do {
+                let attrs = try url.resourceValues(forKeys: [.fileSizeKey])
+                let fileSize = attrs.fileSize ?? 0
+                guard fileSize > 0, fileSize <= 64 * 1024 * 1024 else {
+                    throw NSError(domain: "PasscodeTheme", code: 1, userInfo: [NSLocalizedDescriptionKey: "Theme file too large or empty (max 64MB)."])
+                }
                 let data = try Data(contentsOf: url)
                 let tempDir =
                     FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
@@ -338,6 +418,9 @@ struct PasscodeView: View {
         originalSize: Int
     ) -> Data? {
         guard originalSize > 0 else { return Data() }
+        // Cap allocation to mitigate zip-bomb themed imports.
+        let maxUncompressed = 16 * 1024 * 1024
+        guard originalSize <= maxUncompressed else { return nil }
         let destinationBuffer = UnsafeMutablePointer<UInt8>
             .allocate(capacity: originalSize)
         defer { destinationBuffer.deallocate() }
@@ -383,22 +466,7 @@ struct PasscodeView: View {
     }
     
     func matchFilenameToKey(_ filename: String) -> String? {
-        let lowercased = filename.lowercased()
-        
-        for i in 0...9 {
-            if lowercased.contains("other-2-\(i)--dark") ||
-                lowercased.contains("-\(i)-") ||
-                lowercased.contains("-\(i)@") ||
-                lowercased.contains("_\(i)_") ||
-                lowercased.contains("_\(i)@") ||
-                lowercased.contains("/\(i).png") ||
-                lowercased.contains("/\(i).jpg") ||
-                lowercased.contains("/\(i).jpeg") {
-                return String(i)
-            }
-        }
-        
-        return nil
+        passcodeMatchFilenameToKey(filename)
     }
     
     func applyTheme() {
@@ -407,13 +475,28 @@ struct PasscodeView: View {
             return
         }
 
-        processing = true
-        statusMessage = ""
+        // Claim on main before enqueue so a double-tap cannot interleave TelephonyUI writes.
+        let claimed: Bool = {
+            if processing || passcodeThemeManager.isApplying { return false }
+            processing = true
+            statusMessage = ""
+            passcodeThemeManager.isApplying = true
+            passcodeThemeManager.progress = 0
+            passcodeThemeManager.message = "preparing passcode theme..."
+            return true
+        }()
+        guard claimed else { return }
 
         DispatchQueue.global(qos: .userInitiated).async {
-            guard let basePath = resolveTelephonyBasePath() else {
+            defer {
                 DispatchQueue.main.async {
                     processing = false
+                    passcodeThemeManager.isApplying = false
+                }
+            }
+
+            guard let basePath = resolveTelephonyBasePath() else {
+                DispatchQueue.main.async {
                     statusMessage = "Error: TelephonyUI cache not found"
                 }
                 return
@@ -422,7 +505,6 @@ struct PasscodeView: View {
             let fm = FileManager.default
             guard let enumerator = fm.enumerator(atPath: basePath) else {
                 DispatchQueue.main.async {
-                    processing = false
                     statusMessage = "Error: failed to enumerate cache"
                 }
                 return
@@ -434,35 +516,19 @@ struct PasscodeView: View {
                 let lower = file.lowercased()
                 guard lower.hasSuffix(".png") else { continue }
 
-                for i in 0...9 {
-                    if lower.contains("other-2-\(i)--dark") ||
-                        lower.contains("-\(i)-") ||
-                        lower.contains("_\(i)_") ||
-                        lower.contains("_\(i)@") {
-                        targets[String(i), default: []].append("\(basePath)/\(file)")
-                    }
+                if let key = matchFilenameToKey(file) {
+                    targets[key, default: []].append("\(basePath)/\(file)")
                 }
             }
 
             let total = max(Double(selectedKeys.count), 1.0)
             var successCount = 0
-            var failCount = 0
             var errors: [String] = []
-
-            DispatchQueue.main.async {
-                passcodeThemeManager.isApplying = true
-                passcodeThemeManager.progress = 0
-                passcodeThemeManager.message = "preparing passcode theme..."
-            }
-
-            defer {
-                DispatchQueue.main.async {
-                    processing = false
-                    passcodeThemeManager.isApplying = false
-                }
-            }
+            var appliedPaths: [String] = []
+            var aborted = false
 
             for (index, item) in selectedKeys.enumerated() {
+                if aborted { break }
                 autoreleasepool {
                     let keyId = item.key
                     let imageData = item.value
@@ -474,8 +540,8 @@ struct PasscodeView: View {
                     }
 
                     if matched.isEmpty {
-                        failCount += 1
                         errors.append("no target found for \(keyId)")
+                        aborted = true
                         return
                     }
 
@@ -483,12 +549,25 @@ struct PasscodeView: View {
                         do {
                             try passcodeThemeManager.applyImage(data: imageData, to: path)
                             successCount += 1
+                            appliedPaths.append(path)
                             mgr.logmsg("applied \(keyId) -> \(path)")
                         } catch {
-                            failCount += 1
                             errors.append("\(path): \(error.localizedDescription)")
                             mgr.logmsg("failed \(path): \(error.localizedDescription)")
+                            aborted = true
+                            break
                         }
+                    }
+                }
+            }
+
+            if aborted, !appliedPaths.isEmpty {
+                for path in appliedPaths.reversed() {
+                    do {
+                        try passcodeThemeManager.restoreBackup(targetPath: path)
+                        mgr.logmsg("rolled back \(path)")
+                    } catch {
+                        mgr.logmsg("rollback failed \(path): \(error.localizedDescription)")
                     }
                 }
             }
@@ -496,12 +575,12 @@ struct PasscodeView: View {
             DispatchQueue.main.async {
                 passcodeThemeManager.progress = 1.0
 
-                if failCount == 0 {
+                if !aborted {
                     passcodeThemeManager.message = "Done"
                     statusMessage = "applied \(successCount) file(s)"
                 } else {
-                    passcodeThemeManager.message = "Completed with errors"
-                    statusMessage = "applied \(successCount), failed \(failCount)\n\n\(errors.joined(separator: "\n"))"
+                    passcodeThemeManager.message = "Failed — rolled back"
+                    statusMessage = "apply aborted after \(successCount) write(s); restored backups where possible\n\n\(errors.joined(separator: "\n"))"
                 }
             }
         }
@@ -533,13 +612,29 @@ struct PasscodeView: View {
             statusMessage = "Error: SBX not ready"
             return
         }
-        processing = true
-        statusMessage = ""
+
+        // Same claim as applyTheme so restore cannot race mid-apply TelephonyUI writes.
+        let claimed: Bool = {
+            if processing || passcodeThemeManager.isApplying { return false }
+            processing = true
+            statusMessage = ""
+            passcodeThemeManager.isApplying = true
+            passcodeThemeManager.progress = 0
+            passcodeThemeManager.message = "restoring originals..."
+            return true
+        }()
+        guard claimed else { return }
 
         DispatchQueue.global(qos: .userInitiated).async {
-            guard let basePath = resolveTelephonyBasePath() else {
+            defer {
                 DispatchQueue.main.async {
                     processing = false
+                    passcodeThemeManager.isApplying = false
+                }
+            }
+
+            guard let basePath = resolveTelephonyBasePath() else {
+                DispatchQueue.main.async {
                     statusMessage = "Error: TelephonyUI cache not found"
                 }
                 return
@@ -550,12 +645,12 @@ struct PasscodeView: View {
                     mgr.logmsg(msg)
                 }
                 DispatchQueue.main.async {
-                    processing = false
+                    passcodeThemeManager.progress = 1.0
+                    passcodeThemeManager.message = "Done"
                     statusMessage = "Originals restored"
                 }
             } catch {
                 DispatchQueue.main.async {
-                    processing = false
                     statusMessage = "Error: \(error.localizedDescription)"
                 }
             }
@@ -646,37 +741,12 @@ struct ImagePicker: UIViewControllerRepresentable {
                 [weak self] object, error in
                 guard let image = object as? UIImage else { return }
                 guard let self else { return }
-                let resized = self.resizeImage(
-                    image,
-                    targetHeight: 202
-                )
-                if let pngData = resized.pngData() {
+                // Keep source pixels; applyImage resizes to each TelephonyUI target's size.
+                if let pngData = image.pngData() {
                     DispatchQueue.main.async {
                         self.parent.imageData = pngData
                     }
                 }
-            }
-        }
-
-        func resizeImage(
-            _ image: UIImage,
-            targetHeight: CGFloat
-        ) -> UIImage {
-            let scale = targetHeight / image.size.height
-            let newWidth = image.size.width * scale
-            let newSize = CGSize(
-                width: newWidth,
-                height: targetHeight
-            )
-            
-            let renderer = UIGraphicsImageRenderer( size: newSize )
-            return renderer.image { _ in
-                image.draw(
-                    in: CGRect(
-                        origin: .zero,
-                        size: newSize
-                    )
-                )
             }
         }
     }

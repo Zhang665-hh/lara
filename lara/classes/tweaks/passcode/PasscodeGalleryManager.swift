@@ -65,15 +65,29 @@ final class PasscodeGalleryManager: ObservableObject {
     var isLoading: Bool { repos.contains { $0.isLoading } }
     var loadError: String? { repos.first { $0.error != nil }?.error }
 
+    
+    /// Require HTTPS and pin downloads to the repo host (or GitHub raw CDN).
+    private func isAllowedThemeHost(_ remote: URL, repoBase: URL) -> Bool {
+        guard remote.scheme?.lowercased() == "https", let remoteHost = remote.host?.lowercased() else { return false }
+        if let repoHost = repoBase.host?.lowercased(), remoteHost == repoHost { return true }
+        return remoteHost == "raw.githubusercontent.com" || remoteHost.hasSuffix(".githubusercontent.com")
+    }
+
     func previewURL(for theme: PasscodeGalleryTheme) -> URL? {
         guard let repoData = repos.first(where: { $0.data?.themes.contains(where: { $0.id == theme.id }) == true })?.data else { return nil }
-        if theme.preview.hasPrefix("http") { return URL(string: theme.preview) }
+        if theme.preview.hasPrefix("http") {
+            guard let abs = URL(string: theme.preview), isAllowedThemeHost(abs, repoBase: repoData.baseURL) else { return nil }
+            return abs
+        }
         return repoData.baseURL.appendingPathComponent(theme.preview)
     }
 
     func downloadURL(for theme: PasscodeGalleryTheme) -> URL? {
         guard let repoData = repos.first(where: { $0.data?.themes.contains(where: { $0.id == theme.id }) == true })?.data else { return nil }
-        if theme.url.hasPrefix("http") { return URL(string: theme.url) }
+        if theme.url.hasPrefix("http") {
+            guard let abs = URL(string: theme.url), isAllowedThemeHost(abs, repoBase: repoData.baseURL) else { return nil }
+            return abs
+        }
         return repoData.baseURL.appendingPathComponent(theme.url)
     }
 
@@ -109,7 +123,10 @@ final class PasscodeGalleryManager: ObservableObject {
 
     func addRepo(_ urlString: String) async {
         let trimmed = urlString.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty, URL(string: trimmed) != nil, !repoURLs.contains(trimmed) else { return }
+        guard !trimmed.isEmpty,
+              let url = URL(string: trimmed),
+              url.scheme?.lowercased() == "https",
+              !repoURLs.contains(trimmed) else { return }
         repoURLs.append(trimmed)
         savePasscodeRepoURLs(repoURLs)
         await refreshRepos()
@@ -122,25 +139,72 @@ final class PasscodeGalleryManager: ObservableObject {
         Task { await refreshRepos() }
     }
 
-    func downloadAndImport(_ theme: PasscodeGalleryTheme) async throws {
+    func downloadAndImport(_ theme: PasscodeGalleryTheme) async throws -> URL {
         guard let fileURL = downloadURL(for: theme) else { throw URLError(.badURL) }
         downloading.insert(theme.id)
         defer { downloading.remove(theme.id) }
-        let (data, _) = try await URLSession.shared.data(from: fileURL)
-        let dest = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent(theme.name + ".passthm")
+        let (tempURL, response) = try await URLSession.shared.download(from: fileURL)
+        // URLSession follows redirects — reject if the final URL left the allowlist.
+        if let finalURL = response.url {
+            guard let repoData = repos.first(where: { $0.data?.themes.contains(where: { $0.id == theme.id }) == true })?.data,
+                  isAllowedThemeHost(finalURL, repoBase: repoData.baseURL) else {
+                try? FileManager.default.removeItem(at: tempURL)
+                throw URLError(.unsupportedURL)
+            }
+        }
+        if let http = response as? HTTPURLResponse, !(200...299).contains(http.statusCode) {
+            throw URLError(.badServerResponse)
+        }
+        let attrs = try FileManager.default.attributesOfItem(atPath: tempURL.path)
+        let size = (attrs[.size] as? NSNumber)?.int64Value ?? 0
+        let maxBytes: Int64 = 64 * 1024 * 1024
+        guard size > 0, size <= maxBytes else {
+            try? FileManager.default.removeItem(at: tempURL)
+            throw URLError(.dataLengthExceedsMaximum)
+        }
+        let data = try Data(contentsOf: tempURL)
+        try? FileManager.default.removeItem(at: tempURL)
+        let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+        let safeBase = theme.name
+            .replacingOccurrences(of: "/", with: "_")
+            .replacingOccurrences(of: "\\", with: "_")
+            .replacingOccurrences(of: "..", with: "_")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let fileName = (safeBase.isEmpty ? "theme" : safeBase) + ".passthm"
+        let dest = docs.appendingPathComponent(fileName).standardizedFileURL
+        let root = docs.standardizedFileURL.path
+        guard dest.path.hasPrefix(root.hasSuffix("/") ? root : root + "/") else {
+            throw URLError(.cannotWriteToFile)
+        }
         try data.write(to: dest, options: .atomic)
+        return dest
     }
 
     private func fetchRepo(_ urlString: String, forceRefresh: Bool = false) async throws -> PasscodeRepoData {
         guard let url = URL(string: urlString) else { throw URLError(.badURL) }
         var req = URLRequest(url: url)
         if forceRefresh { req.cachePolicy = .reloadIgnoringLocalCacheData }
-        let (data, _) = try await URLSession.shared.data(for: req)
-        let baseURL = url.deletingLastPathComponent()
+        let (data, response) = try await URLSession.shared.data(for: req)
+        // Pin final host after redirects (user-added repos can open-redirect).
+        if let finalURL = response.url {
+            guard finalURL.scheme?.lowercased() == "https" else { throw URLError(.unsupportedURL) }
+            let host = (finalURL.host ?? "").lowercased()
+            let repoHost = (url.host ?? "").lowercased()
+            let ok = host == repoHost || host == "raw.githubusercontent.com" || host.hasSuffix(".githubusercontent.com")
+            guard ok else { throw URLError(.unsupportedURL) }
+        }
+        if let http = response as? HTTPURLResponse, !(200...299).contains(http.statusCode) {
+            throw URLError(.badServerResponse)
+        }
+        guard data.count <= 2 * 1024 * 1024 else {
+            throw URLError(.dataLengthExceedsMaximum)
+        }
+        // Relative theme URLs must resolve against the *final* URL after redirects.
+        let resolvedURL = response.url ?? url
+        let baseURL = resolvedURL.deletingLastPathComponent()
 
         if let themes = try? JSONDecoder().decode([PasscodeGalleryTheme].self, from: data) {
-            let name = urlString == defaultPasscodeRepoURL ? "Cowabunga" : (url.deletingPathExtension().lastPathComponent)
+            let name = urlString == defaultPasscodeRepoURL ? "Cowabunga" : (resolvedURL.deletingPathExtension().lastPathComponent)
             return PasscodeRepoData(name: name, author: nil, icon: nil, themes: themes, baseURL: baseURL)
         }
 

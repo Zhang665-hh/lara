@@ -20,6 +20,7 @@ struct JitView: View {
     @State private var query = ""
     @State private var allprocs: [proc] = []
     @State private var enablingbid: String? = nil
+    @State private var lastResult: String? = nil
 
     private var filteredprocs: [proc] {
         let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -103,6 +104,14 @@ struct JitView: View {
                 }
             }
             .navigationTitle("LaraJIT")
+            .alert("JIT", isPresented: Binding(
+                get: { lastResult != nil },
+                set: { if !$0 { lastResult = nil } }
+            )) {
+                Button("OK") { lastResult = nil }
+            } message: {
+                Text(lastResult ?? "")
+            }
         }
         .onAppear {
             if mgr.sbxready {
@@ -176,29 +185,32 @@ struct JitView: View {
 	        globallogger.log("(jit) enabling for \(bundleID)...")
 
 	        let runenable: () -> Void = {
-				guard let sbProc = mgr.sbProc else {
-					globallogger.log("(jit) error: sbProc is nil")
-					DispatchQueue.main.async { enablingbid = nil }
-					return
-				}
-
-				DispatchQueue.global(qos: .userInitiated).async {
+				var started = false
+				mgr.withSpringBoardRemoteCallAsync({ sbProc in
+					started = true
 					let err: Int32 = bundleID.withCString { (cStr: UnsafePointer<Int8>) -> Int32 in
 						return enable_jit(sbProc, cStr)
 					}
-
 					DispatchQueue.main.async {
 						if err == 0 {
 							globallogger.log("(jit) enabled for \(bundleID)")
+							lastResult = "JIT enabled for \(bundleID)"
 						} else {
 							globallogger.log("(jit) error enabling for \(bundleID)!")
+							lastResult = "JIT failed for \(bundleID) (err \(err))"
 						}
 						enablingbid = nil
 					}
-				}
+				}, completion: {
+					if !started {
+						globallogger.log("(jit) error: springboard remote call unavailable")
+						lastResult = "SpringBoard remote call unavailable"
+						enablingbid = nil
+					}
+				})
 			}
 
-	        if mgr.rcrunning {
+	        if mgr.rcready {
 	            runenable()
 	        } else {
 	            mgr.rcinit(process: "SpringBoard", migbypass: false) { success in
@@ -206,6 +218,7 @@ struct JitView: View {
 	                    runenable()
 	                } else {
 	                    globallogger.log("(jit) rcinit failed")
+	                    lastResult = "Failed to init SpringBoard remote call"
 	                    enablingbid = nil
 	                }
 	            }

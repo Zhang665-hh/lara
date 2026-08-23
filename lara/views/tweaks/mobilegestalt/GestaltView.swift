@@ -11,6 +11,13 @@
 
 import SwiftUI
 
+private func mgCacheDataWrite(_ cacheData: NSMutableData, offset: Int, value: Int) -> Bool {
+    guard offset >= 0, offset + MemoryLayout<Int>.size <= cacheData.length else { return false }
+    cacheData.mutableBytes.storeBytes(of: value, toByteOffset: offset, as: Int.self)
+    return true
+}
+
+
 enum fileloc: String, CaseIterable {
     case springboard = "/var/Managed Preferences/mobile/com.apple.springboard.plist"
     case footnote = "/var/containers/Shared/SystemGroup/systemgroup.com.apple.configurationprofiles/Library/ConfigurationProfiles/SharedDeviceConfiguration.plist"
@@ -34,6 +41,7 @@ struct GestaltView: View {
     
     let mgr: laramgr
     @State private var mgCurrentDict: NSMutableDictionary = NSMutableDictionary()
+    @State private var isapplying = false
     @State private var isGestaltVaild: Bool = false
     
     @State private var showgestaltwarn: Bool = false
@@ -329,6 +337,7 @@ struct GestaltView: View {
                 }
             }
             .navigationTitle("MobileGestalt")
+        .disabled(isapplying)
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
                     Button(action: {
@@ -418,6 +427,9 @@ struct GestaltView: View {
     }
     
     private func applyGestalt() {
+        guard !isapplying else { return }
+        isapplying = true
+        defer { isapplying = false }
         do {
             // first, update the dictionary with some specific properties.
             let cacheExtra = mgCurrentDict["CacheExtra"] as? NSMutableDictionary ?? NSMutableDictionary()
@@ -430,6 +442,9 @@ struct GestaltView: View {
             if mgEnableDeviceName {
                 ArtworkDict["ArtworkDeviceProductDescription"] = mgDeviceName
             }
+            // Write nested Artwork dict (and CacheExtra itself) back — otherwise new dicts are dropped.
+            cacheExtra["oPeik/9e8lQWMszEjbPzng"] = ArtworkDict
+            mgCurrentDict["CacheExtra"] = cacheExtra
             
             // then, check to make sure it's actually valid
             if !vaildateCacheExtra(mgCurrentDict) { throw "MobileGestalt is not vaild! Please restart the app." }
@@ -449,14 +464,20 @@ struct GestaltView: View {
     }
     
     private func restoreGestalt() {
+        guard !isapplying else { return }
+        isapplying = true
+        defer { isapplying = false }
         do {
             let docsDir = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
             let mgSavedURL = docsDir.appendingPathComponent("SavedGestalt.plist")
             
             if FileManager.default.fileExists(atPath: mgSavedURL.path) {
                 let restored = try loadMutablePlistDictionary(from: mgSavedURL)
-                _ = try verifyPlist(restored, targetPath: mgCurrentPath)
+                let mgData = try verifyPlist(restored, targetPath: mgCurrentPath)
+                let result = mgr.lara_overwritefile(target: mgCurrentPath, data: mgData, fallback_vfs: false)
+                guard result.ok else { throw "Overwrite failed: \(result.message)" }
                 mgCurrentDict = restored
+                Alertinator.shared.alert(title: "Restored MobileGestalt!", body: "Respring to see any changes", actionLabel: "Respring", action: { mgr.respring() })
             } else {
                 throw "No MobileGestalt file found!"
             }
@@ -491,13 +512,13 @@ struct GestaltView: View {
     private func mgKeyBinding<T: Equatable>(_ keys: [String], type: T.Type = Int.self, defaultValue: T? = 0, enableValue: T? = 1) -> Binding<Bool>  {
         // immediately return false if it can't find cacheextra, again why is this here? i think it's safety.
         guard let cacheExtra = mgCurrentDict["CacheExtra"] as? NSMutableDictionary else {
-            return State(initialValue: false).projectedValue
+            return Binding.constant(false)
         }
         
         // then return the binding
         return Binding(get: {
             // get the value in terms of the type and return it as a bool.
-            if let value = cacheExtra[keys.first!] as? T?, let enableValue {
+            if let key = keys.first, let value = cacheExtra[key] as? T?, let enableValue {
                 return value == enableValue
             }
             return false
@@ -516,9 +537,10 @@ struct GestaltView: View {
     private func mgTrollPadBinding() -> Binding<Bool> {
         guard let cacheData = mgCurrentDict["CacheData"] as? NSMutableData,
                 let cacheExtra = mgCurrentDict["CacheExtra"] as? NSMutableDictionary else {
-            return State(initialValue: false).projectedValue
+            return Binding.constant(false)
         }
         let valueOffset = findcachedataoff("mtrAoWJ3gsq+I90ZnQ0vQw")
+        guard valueOffset >= 0 else { return Binding.constant(false) }
         let keys = [
             "uKc7FPnEO++lVhHWHFlGbQ", // ipad
             "mG0AnH/Vy1veoqoLRAIgTA", // MedusaFloatingLiveAppCapability
@@ -529,7 +551,7 @@ struct GestaltView: View {
         ]
         
         return Binding(get: {
-            if let value = cacheExtra[keys.first!] as? Int? {
+            if let key = keys.first, let value = cacheExtra[key] as? Int? {
                 return value == 1
             }
             return false
@@ -537,7 +559,8 @@ struct GestaltView: View {
             if enabled {
                 Alertinator.shared.alert(title: "Warning!", body: "This is a very dangerous tweak to use! If you use an alphanumeric passcode, DO NOT USE THIS TWEAK AT ALL! Please do not turn off \"Show Dock In Stage Manager\" or your device will BOOTLOOP when rotating to landscape! With these two things in mind, you may experience general instability, or other major issues such as app data randomly disappearing. But I guess some funny multitasking features that still make the device relatively unusable are cool? Whatever dude, I'm not here to tell you how to use your own device.")
             }
-            cacheData.mutableBytes.storeBytes(of: enabled ? 3 : 1, toByteOffset: valueOffset, as: Int.self)
+            // Require CacheData write before mutating CacheExtra so Apply cannot persist a split state.
+            guard mgCacheDataWrite(cacheData, offset: valueOffset, value: enabled ? 3 : 1) else { return }
             for key in keys {
                 if enabled {
                     cacheExtra[key] = 1
@@ -550,7 +573,7 @@ struct GestaltView: View {
     
     func mgRegionRestrictionsBinding() -> Binding<Bool> {
         guard let cacheExtra = mgCurrentDict["CacheExtra"] as? NSMutableDictionary else {
-            return State(initialValue: false).projectedValue
+            return Binding.constant(false)
         }
         
         return Binding<Bool>(
@@ -573,21 +596,27 @@ struct GestaltView: View {
     
     func mgInternalStuffBinding() -> Binding<Bool> {
         guard let cacheData = mgCurrentDict["CacheData"] as? NSMutableData else {
-            return State(initialValue: false).projectedValue
+            return Binding.constant(false)
         }
         
         let off_appleInternalInstall = findcachedataoff("EqrsVvjcYDdxHBiQmGhAWw")
         let off_HasInternalSettingsBundle = findcachedataoff("Oji6HRoPi7rH7HPdWVakuw")
         let off_InternalBuild = findcachedataoff("LBJfwOEzExRxzlAnSuI7eg")
+        guard off_appleInternalInstall >= 0,
+              off_HasInternalSettingsBundle >= 0,
+              off_InternalBuild >= 0 else {
+            return Binding.constant(false)
+        }
         
         return Binding(
             get: {
                 return cacheData.bytes.load(fromByteOffset: off_appleInternalInstall, as: Int.self) == 1
             },
             set: { enabled in
-                cacheData.mutableBytes.storeBytes(of: enabled ? 1 : 0, toByteOffset: off_appleInternalInstall, as: Int.self)
-                cacheData.mutableBytes.storeBytes(of: enabled ? 1 : 0, toByteOffset: off_HasInternalSettingsBundle, as: Int.self)
-                cacheData.mutableBytes.storeBytes(of: enabled ? 1 : 0, toByteOffset: off_InternalBuild, as: Int.self)
+                let value = enabled ? 1 : 0
+                guard mgCacheDataWrite(cacheData, offset: off_appleInternalInstall, value: value),
+                      mgCacheDataWrite(cacheData, offset: off_HasInternalSettingsBundle, value: value),
+                      mgCacheDataWrite(cacheData, offset: off_InternalBuild, value: value) else { return }
             }
         )
     }
@@ -636,9 +665,8 @@ struct GestaltView: View {
 
             if result.ok, let value = result.value as? Bool {
                 nuggetValues[key] = value
-            } else {
-                nuggetValues[key] = false
             }
+            // Leave prior/unknown state untouched on read failure - do not invent false.
         }
     }
 
@@ -651,6 +679,7 @@ struct GestaltView: View {
                 nuggetValues[key] ?? false
             },
             set: { enabled in
+                let previous = nuggetValues[key]
                 nuggetValues[key] = enabled
 
                 let result = mgr.setplistvalue(
@@ -660,6 +689,12 @@ struct GestaltView: View {
                 )
 
                 if !result.ok {
+                    // Revert optimistic UI so toggle state matches disk.
+                    if let previous {
+                        nuggetValues[key] = previous
+                    } else {
+                        nuggetValues.removeValue(forKey: key)
+                    }
                     Alertinator.shared.alert(
                         title: "Failed to Apply Tweak",
                         body: result.message
@@ -706,15 +741,25 @@ struct GestaltView: View {
             ("BKDigitizerVisualizeTouches", fileloc.backboardd.rawValue)
         ]
 
+        var firstFailure: String? = nil
         for (key, path) in tweaks {
-            _ = mgr.setplistvalue(
+            let result = mgr.setplistvalue(
                 path: path,
                 key: (key, nil),
                 force: true
             )
+            if !result.ok && firstFailure == nil {
+                firstFailure = result.message
+            }
         }
 
         loadnuggettweaks()
+        if let firstFailure {
+            Alertinator.shared.alert(
+                title: "Failed to Reset Some Tweaks",
+                body: firstFailure
+            )
+        }
     }
 }
 

@@ -71,7 +71,7 @@ struct WhitelistView: View {
                 }
             }
             .navigationTitle("Whitelist")
-            .alert("Status", isPresented: .constant(status != nil)) {
+            .alert("Status", isPresented: Binding(get: { status != nil }, set: { if !$0 { status = nil } })) {
                 Button("OK") { status = nil }
             } message: {
                 Text(status ?? "")
@@ -119,19 +119,34 @@ struct WhitelistView: View {
             return
         }
 
-        var failures: [String] = []
-
+        // Stage backups first; roll back on any failure so identity blacklists stay consistent.
+        var staged: [(path: String, name: String, backup: Data)] = []
         for f in files {
-            let result = sbxwrite(path: f.path, data: data)
-            if !result.hasPrefix("ok") {
-                failures.append("\(f.name): \(result)")
+            guard let backup = sbxread(path: f.path, maxSize: 8 * 1024 * 1024), !backup.isEmpty else {
+                status = "Failed to backup \(f.name) before patch"
+                return
             }
+            staged.append((f.path, f.name, backup))
         }
 
-        if failures.isEmpty {
-            status = "Patched all files!"
+        var applied: [(path: String, backup: Data)] = []
+        var failures: [String] = []
+        for item in staged {
+            let result = mgr.lara_overwritefile(target: item.path, data: data)
+            if result.ok {
+                applied.append((item.path, item.backup))
+            } else {
+                failures.append("\(item.name): \(result.message)")
+                break
+            }
+        }
+        if !failures.isEmpty {
+            for item in applied.reversed() {
+                _ = mgr.lara_overwritefile(target: item.path, data: item.backup)
+            }
+            status = "Failed to patch: \(failures.joined(separator: ", ")); rolled back"
         } else {
-            status = "Failed to patch: \(failures.joined(separator: ", "))"
+            status = "Patched all files!"
         }
 
         loadall()
@@ -142,7 +157,8 @@ struct WhitelistView: View {
             let url = URL(fileURLWithPath: path)
             let data = try Data(contentsOf: url, options: .mappedIfSafe)
             if data.count > maxSize {
-                return data.prefix(maxSize)
+                // Truncated backups would corrupt rollback of Rejections/ban plists.
+                return nil
             }
             return data
         } catch {
@@ -151,26 +167,55 @@ struct WhitelistView: View {
     }
 
     private func sbxwrite(path: String, data: Data) -> String {
-        let fd = open(path, O_WRONLY | O_CREAT | O_TRUNC, 0o644)
+        // Never O_TRUNC the live system plist before bytes are committed — a failed
+        // write would leave Rejections/ban lists empty and VFS often cannot restore.
+        let dir = (path as NSString).deletingLastPathComponent
+        let tmp = (dir as NSString).appendingPathComponent(".lara_whitelist_\(UUID().uuidString).tmp")
+        let fd = open(tmp, O_WRONLY | O_CREAT | O_TRUNC | O_EXCL, 0o644)
         if fd == -1 {
-            return vfsfallback(path: path, data: data, reason: "open failed: errno=\(errno) \(String(cString: strerror(errno)))")
-        }
-        defer { close(fd) }
-
-        let result = data.withUnsafeBytes { ptr in
-            write(fd, ptr.baseAddress, ptr.count)
+            return vfsfallback(path: path, data: data, reason: "temp open failed: errno=\(errno) \(String(cString: strerror(errno)))")
         }
 
-        if result == -1 {
-            return vfsfallback(path: path, data: data, reason: "write failed: errno=\(errno) \(String(cString: strerror(errno)))")
+        var written = 0
+        let ok = data.withUnsafeBytes { ptr -> Bool in
+            guard let base = ptr.baseAddress else { return ptr.count == 0 }
+            while written < ptr.count {
+                let n = write(fd, base.advanced(by: written), ptr.count - written)
+                if n <= 0 { return false }
+                written += n
+            }
+            return true
+        }
+        if !ok {
+            close(fd)
+            unlink(tmp)
+            return vfsfallback(path: path, data: data, reason: "temp write failed: errno=\(errno) \(String(cString: strerror(errno)))")
+        }
+        if fsync(fd) != 0 {
+            let e = errno
+            close(fd)
+            unlink(tmp)
+            return vfsfallback(path: path, data: data, reason: "temp fsync failed: errno=\(e) \(String(cString: strerror(e)))")
+        }
+        close(fd)
+
+        if rename(tmp, path) == 0 {
+            return "ok (\(written) bytes)"
         }
 
-        return "ok (\(result) bytes)"
+        // rename into system path often fails under sandbox — fall back to VFS
+        // overwrite of the original without having truncated it.
+        unlink(tmp)
+        return vfsfallback(path: path, data: data, reason: "rename failed: errno=\(errno) \(String(cString: strerror(errno)))")
     }
 
     private func vfsfallback(path: String, data: Data, reason: String) -> String {
         guard mgr.vfsready else {
             return reason + " | vfs not ready"
+        }
+        let targetSize = mgr.vfssize(path: path)
+        if targetSize > 0 && Int64(data.count) != targetSize {
+            return reason + " | vfs requires exact size \(targetSize), got \(data.count) (SBX rename required)"
         }
         let ok = mgr.vfsoverwritewithdata(target: path, data: data)
         return ok ? "ok (vfs overwrite)" : reason + " | vfs overwrite failed"

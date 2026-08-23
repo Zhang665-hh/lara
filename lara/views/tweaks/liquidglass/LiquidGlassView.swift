@@ -16,6 +16,8 @@ struct LiquidGlassView: View {
     @EnvironmentObject private var mgr: laramgr
     
     @State private var gpCurrentDict: NSMutableDictionary = NSMutableDictionary()
+    @State private var isapplying = false
+    @State private var gpLoaded: Bool = false
     @State private var trueBool: Bool = true
     
     @State private var dumbassToggleThatMakesTheViewUpdate: Bool = false
@@ -51,6 +53,7 @@ struct LiquidGlassView: View {
                 }
             }
             .navigationTitle("Liquid Glass")
+        .disabled(isapplying)
             .onAppear {
                 loadGPData()
             }
@@ -70,16 +73,25 @@ struct LiquidGlassView: View {
             chmod(gpSavedURL.path, 0o644)
             
             gpCurrentDict = try NSMutableDictionary(contentsOf: URL(fileURLWithPath: gpCurrentPath), error: ())
+            gpLoaded = true
         } catch {
+            gpLoaded = false
             Alertinator.shared.alert(title: "Failed to load Global Preferences data!", body: "Please restart the app and try again.")
         }
     }
     
     // MARK: applying/reloading functions
     func applyLiquidGlass() {
+        guard !isapplying else { return }
+        isapplying = true
+        defer { isapplying = false }
+        guard gpLoaded, gpCurrentDict.count > 0 else {
+            Alertinator.shared.alert(title: "Failed to enable Liquid Glass Tweaks!", body: "Global Preferences were not loaded — refusing to overwrite with an empty plist.")
+            return
+        }
         do {
             let gpData = try verifyPlist(gpCurrentDict, targetPath: gpCurrentPath)
-            let result = mgr.lara_overwritefile(target: gpCurrentPath, data: gpData)
+            let result = mgr.lara_overwritefile(target: gpCurrentPath, data: gpData, fallback_vfs: false)
             
             if result.ok {
                 Alertinator.shared.alert(title: "Successfully applied Liquid Glass Tweaks!", body: "Reboot your device to see any changes")
@@ -92,14 +104,21 @@ struct LiquidGlassView: View {
     }
     
     func restoreLiquidGlass() {
+        guard !isapplying else { return }
+        isapplying = true
+        defer { isapplying = false }
         do {
             let docsDir = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
             let gpSavedURL = docsDir.appendingPathComponent("SavedGlobalPrefs.plist")
             
             if FileManager.default.fileExists(atPath: gpSavedURL.path) {
                 let restored = try NSMutableDictionary(contentsOf: gpSavedURL, error: ())
-                _ = try verifyPlist(restored, targetPath: mgCurrentPath)
+                let gpData = try verifyPlist(restored, targetPath: gpCurrentPath)
+                let result = mgr.lara_overwritefile(target: gpCurrentPath, data: gpData, fallback_vfs: false)
+                guard result.ok else { throw "Overwrite failed: \(result.message)" }
                 gpCurrentDict = restored
+                gpLoaded = true
+                Alertinator.shared.alert(title: "Restored Liquid Glass!", body: "Reboot your device to see any changes")
             } else {
                 throw "No Global Prefs file found!"
             }
@@ -109,19 +128,18 @@ struct LiquidGlassView: View {
     }
     
     // MARK: bindings
-    private func gpKeyBinding<T: Equatable>(_ key: String, type: T.Type = Bool.self, default: T? = false, enable: T? = true) -> Binding<Bool> {
+    private func gpKeyBinding(_ key: String, default defaultValue: Bool? = false, enable enableValue: Bool? = true) -> Binding<Bool> {
         return Binding(get: {
             _ = dumbassToggleThatMakesTheViewUpdate
-            if let value = gpCurrentDict[key] as? T?, let enable {
-                return value == enable
+            if let value = gpCurrentDict[key] as? Bool, let enableValue {
+                return value == enableValue
             }
             return false
         }, set: { enabled in
+            dumbassToggleThatMakesTheViewUpdate.toggle()
             if enabled {
-                dumbassToggleThatMakesTheViewUpdate.toggle()
-                gpCurrentDict[key] = enable
+                gpCurrentDict[key] = enableValue
             } else {
-                dumbassToggleThatMakesTheViewUpdate.toggle()
                 gpCurrentDict.removeObject(forKey: key)
             }
         })
