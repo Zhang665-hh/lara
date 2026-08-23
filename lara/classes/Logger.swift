@@ -20,6 +20,7 @@ let globallogger = Logger()
 
 class Logger: ObservableObject {
     @Published var logs: [String] = []
+    private let maxLogs = 2000
 
     private var lastmessage: String?
     private var repeatCount = 0
@@ -130,6 +131,7 @@ class Logger: ObservableObject {
             }
 
             self.lastwasdivider = false
+            self.trimLogsIfNeeded()
         }
 
         appendtofile([message])
@@ -249,11 +251,19 @@ class Logger: ObservableObject {
             let filtered = lines.filter { !shouldignore($0) }
             DispatchQueue.main.async {
                 self.logs.append(contentsOf: filtered)
+                self.trimLogsIfNeeded()
             }
             appendtofile(filtered)
             for line in filtered {
                 emit(line)
             }
+        }
+    }
+
+
+    private func trimLogsIfNeeded() {
+        if logs.count > maxLogs {
+            logs.removeFirst(logs.count - maxLogs)
         }
     }
 
