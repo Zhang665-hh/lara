@@ -44,8 +44,6 @@ func fetchkcache() -> Bool {
 
     let fakeread = "/private/preboot/Cryptexes/OS/System/Library/CoreServices/RestoreVersion.plist"
 
-    unlink(outpath)
-
     var redirectState = vn_redirect_state_t(orig_vnode: 0, orig_v_data: 0, to_fd: -1, from_fd: -1)
 
     let redirect = kcpath.withCString { kcCString in
@@ -62,17 +60,23 @@ func fetchkcache() -> Bool {
         return false
     }
 
-    let dst = open(outpath, O_WRONLY | O_CREAT | O_TRUNC, 0o644)
+    // Unique sibling temp + O_EXCL — never unlink/open the live Documents path (TOCTOU).
+    let tmpPath = outpath + ".lara.\(arc4random()).tmp"
+    let dst = open(tmpPath, O_WRONLY | O_CREAT | O_TRUNC | O_EXCL, 0o644)
     if dst < 0 {
         close(src)
         vn_fileunredirect(&redirectState)
         return false
     }
 
+    var published = false
     defer {
         close(src)
         close(dst)
         vn_fileunredirect(&redirectState)
+        if !published {
+            unlink(tmpPath)
+        }
     }
 
     var buffer = [UInt8](repeating: 0, count: 0x4000)
@@ -116,25 +120,33 @@ func fetchkcache() -> Bool {
         totalBytes += n
     }
 
-    if copyFailed || !FileManager.default.fileExists(atPath: outpath) || totalBytes == 0 {
-        unlink(outpath)
+    if copyFailed || totalBytes == 0 {
         globallogger.log("(fetchkcache) kernelcache output incomplete — removed truncated file")
         return false
     }
-
-    guard let handle = FileHandle(forReadingAtPath: outpath) else {
-        globallogger.log("(fetchkcache) kernelcache output missing")
+    if fsync(dst) != 0 {
+        globallogger.log("(fetchkcache) fsync failed")
         return false
     }
 
+    // Validate magic on the temp before publishing.
+    guard let handle = FileHandle(forReadingAtPath: tmpPath) else {
+        globallogger.log("(fetchkcache) kernelcache temp missing")
+        return false
+    }
     let magic = handle.readData(ofLength: 2)
     handle.closeFile()
-
     guard magic.count == 2, magic[magic.startIndex] == 0x30, magic[magic.index(after: magic.startIndex)] == 0x84 else {
-        unlink(outpath)
         globallogger.log("(fetchkcache) invalid kernelcache output")
         return false
     }
+
+    unlink(outpath)
+    if rename(tmpPath, outpath) != 0 {
+        globallogger.log("(fetchkcache) rename to final path failed")
+        return false
+    }
+    published = true
 
     globallogger.log("(fetchkcache) kernelcache fetch success!")
     return true
