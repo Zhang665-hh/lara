@@ -42,7 +42,7 @@ struct TweaksView: View {
                 }
                 
                 Section(header: HeaderLabel(text: "User Interface", icon: "eye")) {
-                    NavigationLink("dirtyZero", destination: dirtyZeroView())
+                    NavigationLink("dirtyZero (Broken)", destination: dirtyZeroView())
                         .disabled(!mgr.vfsready)
                     NavigationLink("MobileGestalt", destination: GestaltView(mgr: mgr))
                         .disabled(!mgr.sbxready)
@@ -62,7 +62,7 @@ struct TweaksView: View {
                 }
                 
                 Section(header: HeaderLabel(text: "Broken", icon: "exclamationmark.triangle.fill")) {
-                    NavigationLink("DarkBoard", destination: DarkBoardView())
+                    NavigationLink("DarkBoard (Broken)", destination: DarkBoardView())
                         .disabled(true)
                 }
                 
