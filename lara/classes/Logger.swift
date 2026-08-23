@@ -244,7 +244,7 @@ class Logger: ObservableObject {
     }
 
     private func appendraw(_ chunk: String) {
-        var text = panding + chunk
+        let text = panding + chunk
         var lines = text.components(separatedBy: "\n")
         panding = lines.removeLast()
         if !lines.isEmpty {
@@ -317,7 +317,7 @@ class Logger: ObservableObject {
         ])
         
         logfilehandle = try? FileHandle(forWritingTo: url)
-        try? logfilehandle?.seekToEnd()
+        _ = try? logfilehandle?.seekToEnd()
         
         let formatter = DateFormatter()
         formatter.dateFormat = "yyyy-MM-dd HH:mm:ss"
@@ -340,7 +340,7 @@ class Logger: ObservableObject {
             ])
         }
         logfilehandle = try? FileHandle(forWritingTo: url)
-        try? logfilehandle?.seekToEnd()
+        _ = try? logfilehandle?.seekToEnd()
     }
 
     private func appendtofile(_ lines: [String]) {
