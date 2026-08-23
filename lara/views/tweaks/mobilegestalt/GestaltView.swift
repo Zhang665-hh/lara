@@ -11,6 +11,13 @@
 
 import SwiftUI
 
+private func mgCacheDataWrite(_ cacheData: NSMutableData, offset: Int, value: Int) -> Bool {
+    guard offset >= 0, offset + MemoryLayout<Int>.size <= cacheData.length else { return false }
+    cacheData.mutableBytes.storeBytes(of: value, toByteOffset: offset, as: Int.self)
+    return true
+}
+
+
 enum fileloc: String, CaseIterable {
     case springboard = "/var/Managed Preferences/mobile/com.apple.springboard.plist"
     case footnote = "/var/containers/Shared/SystemGroup/systemgroup.com.apple.configurationprofiles/Library/ConfigurationProfiles/SharedDeviceConfiguration.plist"
@@ -543,7 +550,7 @@ struct GestaltView: View {
             if enabled {
                 Alertinator.shared.alert(title: "Warning!", body: "This is a very dangerous tweak to use! If you use an alphanumeric passcode, DO NOT USE THIS TWEAK AT ALL! Please do not turn off \"Show Dock In Stage Manager\" or your device will BOOTLOOP when rotating to landscape! With these two things in mind, you may experience general instability, or other major issues such as app data randomly disappearing. But I guess some funny multitasking features that still make the device relatively unusable are cool? Whatever dude, I'm not here to tell you how to use your own device.")
             }
-            cacheData.mutableBytes.storeBytes(of: enabled ? 3 : 1, toByteOffset: valueOffset, as: Int.self)
+            _ = mgCacheDataWrite(cacheData, offset: valueOffset, value: enabled ? 3 : 1)
             for key in keys {
                 if enabled {
                     cacheExtra[key] = 1
@@ -591,9 +598,9 @@ struct GestaltView: View {
                 return cacheData.bytes.load(fromByteOffset: off_appleInternalInstall, as: Int.self) == 1
             },
             set: { enabled in
-                cacheData.mutableBytes.storeBytes(of: enabled ? 1 : 0, toByteOffset: off_appleInternalInstall, as: Int.self)
-                cacheData.mutableBytes.storeBytes(of: enabled ? 1 : 0, toByteOffset: off_HasInternalSettingsBundle, as: Int.self)
-                cacheData.mutableBytes.storeBytes(of: enabled ? 1 : 0, toByteOffset: off_InternalBuild, as: Int.self)
+                _ = mgCacheDataWrite(cacheData, offset: off_appleInternalInstall, value: enabled ? 1 : 0)
+                _ = mgCacheDataWrite(cacheData, offset: off_HasInternalSettingsBundle, value: enabled ? 1 : 0)
+                _ = mgCacheDataWrite(cacheData, offset: off_InternalBuild, value: enabled ? 1 : 0)
             }
         )
     }

@@ -117,6 +117,13 @@ final class IconThemeGalleryManager: ObservableObject {
         guard let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode == 200 else {
             throw NSError(domain: "IconThemeGallery", code: 2, userInfo: [NSLocalizedDescriptionKey: "Could not download \(theme.name)."])
         }
+        let attrs = try FileManager.default.attributesOfItem(atPath: temporaryURL.path)
+        let size = (attrs[.size] as? NSNumber)?.int64Value ?? 0
+        let maxBytes: Int64 = 128 * 1024 * 1024
+        guard size > 0, size <= maxBytes else {
+            try? FileManager.default.removeItem(at: temporaryURL)
+            throw NSError(domain: "IconThemeGallery", code: 5, userInfo: [NSLocalizedDescriptionKey: "Theme archive too large."])
+        }
 
         let fileExtension = remoteURL.pathExtension.isEmpty ? "zip" : remoteURL.pathExtension
         let importURL = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString).appendingPathExtension(fileExtension)
@@ -131,6 +138,10 @@ final class IconThemeGalleryManager: ObservableObject {
         let baseURL = try await fetchServerBaseURL(forceRefresh: false)
         guard let url = URL(string: relativePath, relativeTo: baseURL)?.absoluteURL else {
             throw NSError(domain: "IconThemeGallery", code: 3, userInfo: [NSLocalizedDescriptionKey: "Invalid gallery URL for \(relativePath)."])
+        }
+        // Reject absolute third-party hosts injected via gallery JSON.
+        if let baseHost = baseURL.host, let urlHost = url.host, baseHost.caseInsensitiveCompare(urlHost) != .orderedSame {
+            throw NSError(domain: "IconThemeGallery", code: 4, userInfo: [NSLocalizedDescriptionKey: "Theme URL host mismatch."])
         }
         return url
     }

@@ -404,6 +404,11 @@ final class IconThemeManager: ObservableObject {
                 try fm.createDirectory(at: extractDir, withIntermediateDirectories: true, attributes: nil)
                 
                 let archivePath = tempDir.appendingPathComponent("import.\(ext == "zip" ? "zip" : "theme")")
+                let attrs = try fm.attributesOfItem(atPath: workingURL.path)
+                let size = (attrs[.size] as? NSNumber)?.int64Value ?? 0
+                guard size > 0, size <= 128 * 1024 * 1024 else {
+                    throw NSError(domain: "IconTheme", code: 9, userInfo: [NSLocalizedDescriptionKey: "Theme archive too large."])
+                }
                 try Data(contentsOf: workingURL).write(to: archivePath)
                 try unzipFile(at: archivePath, to: extractDir)
                 let resolvedSource = try resolveThemeSourceDirectory(from: extractDir)
@@ -721,6 +726,11 @@ final class IconThemeManager: ObservableObject {
             withIntermediateDirectories: true
         )
 
+        let srcAttrs = try FileManager.default.attributesOfItem(atPath: source.path)
+        let srcSize = (srcAttrs[.size] as? NSNumber)?.int64Value ?? 0
+        guard srcSize > 0, srcSize <= 128 * 1024 * 1024 else {
+            throw NSError(domain: "IconTheme", code: 9, userInfo: [NSLocalizedDescriptionKey: "Theme archive too large."])
+        }
         let archive = try ZipArchive(data: try Data(contentsOf: source))
         unzip_logmsg("zip entries: \(archive.entries.count)")
 
