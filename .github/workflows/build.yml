@@ -19,6 +19,7 @@ jobs:
         run: |
           python3 scripts/checks/check_no_malware.py
           python3 scripts/checks/check_support_matrix.py
+          python3 scripts/checks/check_licenses.py
 
   build:
     needs: checks
