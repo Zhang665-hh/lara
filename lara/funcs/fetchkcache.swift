@@ -141,7 +141,6 @@ func fetchkcache() -> Bool {
         return false
     }
 
-    unlink(outpath)
     if rename(tmpPath, outpath) != 0 {
         globallogger.log("(fetchkcache) rename to final path failed")
         return false
