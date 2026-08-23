@@ -413,13 +413,28 @@ struct PasscodeView: View {
             return
         }
 
-        processing = true
-        statusMessage = ""
+        // Claim on main before enqueue so a double-tap cannot interleave TelephonyUI writes.
+        let claimed: Bool = {
+            if processing || passcodeThemeManager.isApplying { return false }
+            processing = true
+            statusMessage = ""
+            passcodeThemeManager.isApplying = true
+            passcodeThemeManager.progress = 0
+            passcodeThemeManager.message = "preparing passcode theme..."
+            return true
+        }()
+        guard claimed else { return }
 
         DispatchQueue.global(qos: .userInitiated).async {
-            guard let basePath = resolveTelephonyBasePath() else {
+            defer {
                 DispatchQueue.main.async {
                     processing = false
+                    passcodeThemeManager.isApplying = false
+                }
+            }
+
+            guard let basePath = resolveTelephonyBasePath() else {
+                DispatchQueue.main.async {
                     statusMessage = "Error: TelephonyUI cache not found"
                 }
                 return
@@ -428,7 +443,6 @@ struct PasscodeView: View {
             let fm = FileManager.default
             guard let enumerator = fm.enumerator(atPath: basePath) else {
                 DispatchQueue.main.async {
-                    processing = false
                     statusMessage = "Error: failed to enumerate cache"
                 }
                 return
@@ -449,19 +463,6 @@ struct PasscodeView: View {
             var successCount = 0
             var failCount = 0
             var errors: [String] = []
-
-            DispatchQueue.main.async {
-                passcodeThemeManager.isApplying = true
-                passcodeThemeManager.progress = 0
-                passcodeThemeManager.message = "preparing passcode theme..."
-            }
-
-            defer {
-                DispatchQueue.main.async {
-                    processing = false
-                    passcodeThemeManager.isApplying = false
-                }
-            }
 
             for (index, item) in selectedKeys.enumerated() {
                 autoreleasepool {

@@ -158,157 +158,140 @@ class SpringboardColorManager {
     }
     
     static func createColorOLD(forType: SpringboardType, color: CIColor, blur: Int, asTemp: Bool = false) throws {
-        let bgDir = getBackgroundDirectory()
-        
-        if bgDir != nil && finalFiles[forType] != nil && fileFolders[forType] != nil && fileExt[forType] != nil {
-            // get the files
-            let url = Bundle.main.url(forResource: "replacement", withExtension: ".materialrecipe")
-            // set the colors
-            if url != nil {
+        guard let bgDir = getBackgroundDirectory(),
+              let files = finalFiles[forType],
+              let folder = fileFolders[forType],
+              let ext = fileExt[forType] else {
+            throw "Could not find the background files directory!"
+        }
+
+        guard let url = Bundle.main.url(forResource: "replacement", withExtension: ".materialrecipe") else {
+            throw "No replacement materialrecipe resource was found!"
+        }
+
+        do {
+            let plistData = try Data(contentsOf: url)
+            guard var plist = try PropertyListSerialization.propertyList(from: plistData, options: [], format: nil) as? [String: Any] else {
+                throw "Invalid property list format"
+            }
+
+            if var firstLevel = plist["baseMaterial"] as? [String : Any], var secondLevel = firstLevel["tinting"] as? [String: Any], var thirdLevel = secondLevel["tintColor"] as? [String: Any] {
+                thirdLevel["red"] = color.red
+                thirdLevel["green"] = color.green
+                thirdLevel["blue"] = color.blue
+                thirdLevel["alpha"] = 1
+
+                if var secondLevel2 = firstLevel["materialFiltering"] as? [String: Any] {
+                    secondLevel2["blurRadius"] = blur
+                    firstLevel["materialFiltering"] = secondLevel2
+                }
+
+                secondLevel["tintColor"] = thirdLevel
+                secondLevel["tintAlpha"] = color.alpha*(getAlphaMultiplier(forType: forType))
+                firstLevel["tinting"] = secondLevel
+                plist["baseMaterial"] = firstLevel
+            }
+
+            if forType == .module {
+                let styles: [String: String] = [
+                    "fill": "moduleFill",
+                    "stroke": "moduleStroke"
+                ]
+                plist["styles"] = styles
+                plist["materialSettingsVersion"] = 2
+            }
+
+            for file in files {
+                let path: String = "\(folder)\(file)\(ext)"
+                let newUrl = URL(fileURLWithPath: path)
                 do {
-                    let plistData = try Data(contentsOf: url!)
-                    guard var plist = try PropertyListSerialization.propertyList(from: plistData, options: [], format: nil) as? [String: Any] else {
-                        throw "Invalid property list format"
-                    }
-                    
-                    if var firstLevel = plist["baseMaterial"] as? [String : Any], var secondLevel = firstLevel["tinting"] as? [String: Any], var thirdLevel = secondLevel["tintColor"] as? [String: Any] {
-                        // set the colors
-                        thirdLevel["red"] = color.red
-                        thirdLevel["green"] = color.green
-                        thirdLevel["blue"] = color.blue
-                        thirdLevel["alpha"] = 1
-                        
-                        if var secondLevel2 = firstLevel["materialFiltering"] as? [String: Any] {
-                            secondLevel2["blurRadius"] = blur
-                            firstLevel["materialFiltering"] = secondLevel2
+                    let originalFileSize = try Data(contentsOf: newUrl).count
+                    let newData = try addEmptyData(matchingSize: originalFileSize, to: plist)
+                    if newData.count == originalFileSize {
+                        if asTemp {
+                            try newData.write(to: FileManager.default.temporaryDirectory.appendingPathComponent(file+ext))
+                        } else {
+                            try newData.write(to: bgDir.appendingPathComponent(file+ext))
                         }
-                        
-                        secondLevel["tintColor"] = thirdLevel
-                        secondLevel["tintAlpha"] = color.alpha*(getAlphaMultiplier(forType: forType))
-                        firstLevel["tinting"] = secondLevel
-                        plist["baseMaterial"] = firstLevel
-                    }
-                    
-                    if forType == .module {
-                        let styles: [String: String] = [
-                            "fill": "moduleFill",
-                            "stroke": "moduleStroke"
-                        ]
-                        plist["styles"] = styles
-                        plist["materialSettingsVersion"] = 2
-                    }
-                    
-                    // fill with empty data
-                    for (_, file) in finalFiles[forType]!.enumerated() {
-                        // get original data
-                        let path: String = "\(fileFolders[forType]!)\(file)\(fileExt[forType]!)"
-                        let newUrl = URL(fileURLWithPath: path)
-                        do {
-                            let originalFileSize = try Data(contentsOf: newUrl).count
-                            let newData = try addEmptyData(matchingSize: originalFileSize, to: plist)
-                            // save file to background directory
-                            if newData.count == originalFileSize {
-                                if asTemp {
-                                    try newData.write(to: FileManager.default.temporaryDirectory.appendingPathComponent(file+fileExt[forType]!))
-                                } else {
-                                    try newData.write(to: bgDir!.appendingPathComponent(file+fileExt[forType]!))
-                                }
-                            } else {
-                                print("NOT CORRECT SIZE")
-                            }
-                        } catch {
-                            print(error.localizedDescription)
-                            throw error.localizedDescription
-                        }
+                    } else {
+                        print("NOT CORRECT SIZE")
                     }
                 } catch {
+                    print(error.localizedDescription)
                     throw error.localizedDescription
                 }
             }
-        } else {
-            throw "Could not find the background files directory!"
+        } catch {
+            throw error.localizedDescription
         }
     }
-    
+
     static func createColor(forType: SpringboardType, color: CIColor, blur: Int, asTemp: Bool = false) throws {
-        let bgDir = getBackgroundDirectory()
-        
-        if bgDir != nil && finalFiles[forType] != nil && fileFolders[forType] != nil && fileExt[forType] != nil {
-            if fileExt[forType] == ".materialrecipe" && forType != .switcher {
-                try createColorOLD(forType: forType, color: color, blur: blur, asTemp: asTemp)
-                return
-            }
-            if forType == .switcher {
-                for file in finalFiles[forType]! {
-                    let path: String = "\(fileFolders[forType]!)\(file)\(fileExt[forType]!)"
-                    let plistData = try Data(contentsOf: URL(fileURLWithPath: path))
-                    guard var plist = try PropertyListSerialization.propertyList(from: plistData, options: [], format: nil) as? [String: Any] else {
-                        throw "Invalid property list format"
-                    }
-                    
-                    if var firstLevel = plist["baseMaterial"] as? [String : Any], var secondLevel = firstLevel["materialFiltering"] as? [String: Any] {
-                        secondLevel["blurRadius"] = blur
-                        firstLevel["materialFiltering"] = secondLevel
-                        plist["baseMaterial"] = firstLevel
-                    }
-                    plist["materialSettingsVersion"] = nil
-                    
-                    let newUrl = URL(fileURLWithPath: path)
-                    do {
-                        let originalFileSize = try Data(contentsOf: newUrl).count
-                        let newData = try addEmptyData(matchingSize: originalFileSize, to: plist)
-                        // save file to background directory
-                        if newData.count == originalFileSize {
-                            if asTemp {
-                                if FileManager.default.fileExists(atPath: FileManager.default.temporaryDirectory.appendingPathComponent(file+fileExt[forType]!).path) {
-                                    try FileManager.default.removeItem(at: FileManager.default.temporaryDirectory.appendingPathComponent(file+fileExt[forType]!))
-                                }
-                                try newData.write(to: FileManager.default.temporaryDirectory.appendingPathComponent(file+fileExt[forType]!))
-                            } else {
-                                if FileManager.default.fileExists(atPath: bgDir!.appendingPathComponent(file+fileExt[forType]!).path) {
-                                    try FileManager.default.removeItem(at: bgDir!.appendingPathComponent(file+fileExt[forType]!))
-                                }
-                                try newData.write(to: bgDir!.appendingPathComponent(file+fileExt[forType]!))
-                            }
-                        } else {
-                            print("NOT CORRECT SIZE")
-                            throw "Not the correct file size for item \(file+fileExt[forType]!)!"
-                        }
-                    } catch {
-                        print(error.localizedDescription)
-                        throw error.localizedDescription
-                    }
+        guard let bgDir = getBackgroundDirectory(),
+              let files = finalFiles[forType],
+              let folder = fileFolders[forType],
+              let ext = fileExt[forType] else {
+            throw "Could not find the background files directory!"
+        }
+
+        if ext == ".materialrecipe" && forType != .switcher {
+            try createColorOLD(forType: forType, color: color, blur: blur, asTemp: asTemp)
+            return
+        }
+        if forType == .switcher {
+            for file in files {
+                let path: String = "\(folder)\(file)\(ext)"
+                let plistData = try Data(contentsOf: URL(fileURLWithPath: path))
+                guard var plist = try PropertyListSerialization.propertyList(from: plistData, options: [], format: nil) as? [String: Any] else {
+                    throw "Invalid property list format"
                 }
-                return
-            }
-            // get the files
-            for file in finalFiles[forType]! {
-                let url = Bundle.main.url(forResource: file, withExtension: fileExt[forType]!)
-                if url != nil {
-                    //let originPath = fileFolders[forType]! + file + fileExt[forType]!
-                    let newColor: CIColor = CIColor(red: color.red, green: color.green, blue: color.blue, alpha: color.alpha*getAlphaMultiplier(forType: forType))
-                    let newData = try ColorSwapManager.setColor(url: url!, color: newColor, blur: blur)
-                    if asTemp {
-                        if FileManager.default.fileExists(atPath: FileManager.default.temporaryDirectory.appendingPathComponent(file+fileExt[forType]!).path) {
-                            try FileManager.default.removeItem(at: FileManager.default.temporaryDirectory.appendingPathComponent(file+fileExt[forType]!))
+
+                if var firstLevel = plist["baseMaterial"] as? [String : Any], var secondLevel = firstLevel["materialFiltering"] as? [String: Any] {
+                    secondLevel["blurRadius"] = blur
+                    firstLevel["materialFiltering"] = secondLevel
+                    plist["baseMaterial"] = firstLevel
+                }
+                plist["materialSettingsVersion"] = nil
+
+                let newUrl = URL(fileURLWithPath: path)
+                do {
+                    let originalFileSize = try Data(contentsOf: newUrl).count
+                    let newData = try addEmptyData(matchingSize: originalFileSize, to: plist)
+                    if newData.count == originalFileSize {
+                        let dest = asTemp
+                            ? FileManager.default.temporaryDirectory.appendingPathComponent(file+ext)
+                            : bgDir.appendingPathComponent(file+ext)
+                        if FileManager.default.fileExists(atPath: dest.path) {
+                            try FileManager.default.removeItem(at: dest)
                         }
-                        try newData.write(to: FileManager.default.temporaryDirectory.appendingPathComponent(file+fileExt[forType]!))
+                        try newData.write(to: dest)
                     } else {
-                        if FileManager.default.fileExists(atPath: bgDir!.appendingPathComponent(file+fileExt[forType]!).path) {
-                            try FileManager.default.removeItem(at: bgDir!.appendingPathComponent(file+fileExt[forType]!))
-                        }
-                        try newData.write(to: bgDir!.appendingPathComponent(file+fileExt[forType]!))
+                        print("NOT CORRECT SIZE")
+                        throw "Not the correct file size for item \(file+ext)!"
                     }
-                } else {
-                    throw "Backup url could not be found!"
+                } catch {
+                    print(error.localizedDescription)
+                    throw error.localizedDescription
                 }
             }
             return
-        } else {
-            throw "Could not find the background files directory!"
+        }
+        for file in files {
+            guard let url = Bundle.main.url(forResource: file, withExtension: ext) else {
+                throw "Backup url could not be found!"
+            }
+            let newColor: CIColor = CIColor(red: color.red, green: color.green, blue: color.blue, alpha: color.alpha*getAlphaMultiplier(forType: forType))
+            let newData = try ColorSwapManager.setColor(url: url, color: newColor, blur: blur)
+            let dest = asTemp
+                ? FileManager.default.temporaryDirectory.appendingPathComponent(file+ext)
+                : bgDir.appendingPathComponent(file+ext)
+            if FileManager.default.fileExists(atPath: dest.path) {
+                try FileManager.default.removeItem(at: dest)
+            }
+            try newData.write(to: dest)
         }
     }
-    
+
     static func deteleColor(forType: SpringboardType) throws {
         guard let bgDir = getBackgroundDirectory(),
               let files = finalFiles[forType],

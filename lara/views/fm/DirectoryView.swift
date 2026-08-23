@@ -63,8 +63,12 @@ final class santanderdirmodel: ObservableObject {
         self.writevfs = writevfs
     }
 
+    private var loadGeneration = 0
+
     func load(query: String = "") {
         loading = true
+        loadGeneration += 1
+        let generation = loadGeneration
         let item = item
         let readsbx = readsbx
         let sort = sort
@@ -91,6 +95,8 @@ final class santanderdirmodel: ObservableObject {
             )
 
             DispatchQueue.main.async {
+                // Drop stale listings from overlapping loads (search/sort/navigate).
+                guard generation == self.loadGeneration else { return }
                 self.allitems = listing.items
                 self.shownitems = shown
                 self.emptymsg = empty

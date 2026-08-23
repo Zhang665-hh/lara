@@ -79,7 +79,7 @@ struct LiquidGlassView: View {
     func applyLiquidGlass() {
         do {
             let gpData = try verifyPlist(gpCurrentDict, targetPath: gpCurrentPath)
-            let result = mgr.lara_overwritefile(target: gpCurrentPath, data: gpData)
+            let result = mgr.lara_overwritefile(target: gpCurrentPath, data: gpData, fallback_vfs: false)
             
             if result.ok {
                 Alertinator.shared.alert(title: "Successfully applied Liquid Glass Tweaks!", body: "Reboot your device to see any changes")
@@ -99,7 +99,7 @@ struct LiquidGlassView: View {
             if FileManager.default.fileExists(atPath: gpSavedURL.path) {
                 let restored = try NSMutableDictionary(contentsOf: gpSavedURL, error: ())
                 let gpData = try verifyPlist(restored, targetPath: gpCurrentPath)
-                let result = mgr.lara_overwritefile(target: gpCurrentPath, data: gpData)
+                let result = mgr.lara_overwritefile(target: gpCurrentPath, data: gpData, fallback_vfs: false)
                 guard result.ok else { throw "Overwrite failed: \(result.message)" }
                 gpCurrentDict = restored
                 Alertinator.shared.alert(title: "Restored Liquid Glass!", body: "Reboot your device to see any changes")

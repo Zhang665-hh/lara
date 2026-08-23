@@ -177,6 +177,7 @@ struct DarkBoardView: View {
             alert = DarkBoardAlert(message: "SBX is not initialized. Run the exploit, initialize SBX, then apply again.")
             return
         }
+        guard !manager.isApplying else { return }
 
         DispatchQueue.global(qos: .userInitiated).async {
             do {

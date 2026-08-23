@@ -90,6 +90,11 @@ struct CustomView: View {
 
     private func overwrite() {
         guard canoverwrite else { return }
+        let srcSize = (try? FileManager.default.attributesOfItem(atPath: srcpath)[.size] as? NSNumber)?.intValue ?? 0
+        guard srcSize > 0 else {
+            mgr.logmsg("overwrite refused: empty source")
+            return
+        }
         isoverwriting = true
         DispatchQueue.global(qos: .userInitiated).async {
             let ok = mgr.vfsoverwritefromlocalpath(target: target, source: srcpath)

@@ -602,22 +602,32 @@ struct CardView: View {
 
     private func readprefersbx(path: String, maxsize: Int) -> Data? {
         if let data = try? Data(contentsOf: URL(fileURLWithPath: path), options: .mappedIfSafe) {
-            return data.count > maxsize ? data.prefix(maxsize) : data
+            // Refuse silent truncation — a partial backup can poison later restores.
+            guard data.count <= maxsize else { return nil }
+            return data
         }
         if mgr.vfsready {
+            if let size = mgr.vfssize(path: path), size > maxsize { return nil }
             return mgr.vfsread(path: path, maxSize: maxsize)
         }
         return nil
     }
 
     private func writeprefersbx(path: String, data: Data) -> Bool {
+        guard !data.isEmpty else { return false }
         do {
             print("(card) writing to \(path)")
             try data.write(to: URL(fileURLWithPath: path), options: .atomic)
             return true
         } catch {
             guard mgr.vfsready else { return false }
-            return mgr.vfsoverwritewithdata(target: path, data: data)
+            // VFS same-size only — never zero-pad a shorter card image/json into place.
+            if let attrs = try? FileManager.default.attributesOfItem(atPath: path),
+               let size = attrs[.size] as? NSNumber,
+               data.count == size.intValue {
+                return mgr.vfsoverwritewithdata(target: path, data: data)
+            }
+            return false
         }
     }
 }

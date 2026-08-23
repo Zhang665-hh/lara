@@ -519,17 +519,31 @@ final class IconThemeManager: ObservableObject {
 
     @discardableResult
     func applyThemes() throws -> [String] {
+        // Atomically claim the apply slot on the main queue so a second tap cannot race.
+        let claimed: Bool = {
+            let claim = {
+                if self.isApplying { return false }
+                self.isApplying = true
+                self.applyProgress = 0
+                self.applyMessage = "Preparing icon changes..."
+                return true
+            }
+            if Thread.isMainThread { return claim() }
+            return DispatchQueue.main.sync(execute: claim)
+        }()
+        guard claimed else {
+            throw NSError(
+                domain: "IconThemeManager",
+                code: 1,
+                userInfo: [NSLocalizedDescriptionKey: "Icon theme apply is already in progress."]
+            )
+        }
+
         createDirectoriesIfNeeded()
         let changes = try neededChanges()
         let changeCount = max(Double(changes.count), 1.0)
         var errors: [String] = []
         var themedCount = 0
-
-        DispatchQueue.main.async {
-            self.isApplying = true
-            self.applyProgress = 0
-            self.applyMessage = "Preparing icon changes..."
-        }
 
         defer {
             DispatchQueue.main.async {
@@ -573,20 +587,50 @@ final class IconThemeManager: ObservableObject {
     }
 
     func startPendingFixupIfPossible() {
-        guard hasPendingFixup, !isFixingUp, laramgr.shared.sbxready else { return }
-        showFixupSheet = true
-        startPendingFixup()
+        guard hasPendingFixup, laramgr.shared.sbxready else { return }
+        let claimed: Bool = {
+            let claim = {
+                if self.isFixingUp { return false }
+                self.isFixingUp = true
+                self.showFixupSheet = true
+                self.fixupProgress = 0
+                self.fixupMessage = "Restoring original app icons..."
+                return true
+            }
+            if Thread.isMainThread { return claim() }
+            return DispatchQueue.main.sync(execute: claim)
+        }()
+        guard claimed else { return }
+        startPendingFixup(alreadyClaimed: true)
     }
 
     func startPendingFixup() {
-        guard hasPendingFixup, !isFixingUp else { return }
+        startPendingFixup(alreadyClaimed: false)
+    }
+
+    private func startPendingFixup(alreadyClaimed: Bool) {
+        if !alreadyClaimed {
+            let claimed: Bool = {
+                let claim = {
+                    guard self.hasPendingFixup, !self.isFixingUp else { return false }
+                    self.isFixingUp = true
+                    self.fixupProgress = 0
+                    self.fixupMessage = "Restoring original app icons..."
+                    return true
+                }
+                if Thread.isMainThread { return claim() }
+                return DispatchQueue.main.sync(execute: claim)
+            }()
+            guard claimed else { return }
+        } else {
+            guard hasPendingFixup else {
+                DispatchQueue.main.async { self.isFixingUp = false }
+                return
+            }
+        }
         if installedApps.isEmpty {
             try? refreshApps()
         }
-
-        isFixingUp = true
-        fixupProgress = 0
-        fixupMessage = "Restoring original app icons..."
 
         let apps = installedApps.filter { !$0.hiddenFromSpringboard && !$0.pngIconPaths.isEmpty }
         let appCount = max(Double(apps.count), 1.0)

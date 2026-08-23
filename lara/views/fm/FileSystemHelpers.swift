@@ -77,8 +77,10 @@ enum santanderfs {
             return santanderlisting(items: [], empty: "Unable to list directory.")
         }
 
-        let items = entries.map { entry in
-            let full = item.path == "/" ? "/" + entry.name : item.path + "/" + entry.name
+        let items = entries.compactMap { entry -> santanderitem? in
+            let name = entry.name
+            guard !name.isEmpty, name != ".", name != "..", !name.contains("/") else { return nil }
+            let full = item.path == "/" ? "/" + name : item.path + "/" + name
             return santanderitem(path: full, isdir: entry.isDir)
         }
 
@@ -289,7 +291,22 @@ enum santanderfs {
             return santanderloadedfile(preview: .media(url), text: "", editable: false)
         }
 
-        guard let data = readdata(path: item.path, readsbx: readsbx, max: 2 * 1024 * 1024) else {
+        let maxText = 2 * 1024 * 1024
+        // Refuse editing truncated reads — SBX atomic save would drop the unread tail.
+        if readsbx {
+            if let size = sbxfilesize(path: item.path), size > Int64(maxText) {
+                let err = "File is too large to edit safely (\(size) bytes). Open with an external editor or raise the read cap."
+                return santanderloadedfile(preview: .error(err), text: err, editable: false)
+            }
+        } else {
+            let size = vfs_filesize(item.path)
+            if size > Int64(maxText) {
+                let err = "File is too large to edit safely (\(size) bytes) via VFS."
+                return santanderloadedfile(preview: .error(err), text: err, editable: false)
+            }
+        }
+
+        guard let data = readdata(path: item.path, readsbx: readsbx, max: maxText) else {
             let err = readsbx ? "Failed to read file.\n\n" + unreadabledetails(path: item.path) : "Failed to read file."
             return santanderloadedfile(preview: .error(err), text: err, editable: false)
         }
@@ -312,6 +329,13 @@ enum santanderfs {
                     return false
                 }
             }
+            // Never zero-pad a shrink through VFS — that silently corrupts the file.
+            if let attrs = try? FileManager.default.attributesOfItem(atPath: path),
+               let size = attrs[.size] as? NSNumber,
+               data.count < size.intValue {
+                return false
+            }
+            if data.isEmpty { return false }
             return laramgr.shared.vfsoverwritewithdata(target: path, data: data)
         }
         guard readsbx else { return false }

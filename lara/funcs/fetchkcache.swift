@@ -79,6 +79,7 @@ func fetchkcache() -> Bool {
     var buffer = [UInt8](repeating: 0, count: 0x4000)
     let bufferSize = buffer.count
     var totalBytes = 0
+    var copyFailed = false
 
     while true {
         let n = buffer.withUnsafeMutableBytes { rawBuffer in
@@ -87,7 +88,8 @@ func fetchkcache() -> Bool {
 
         if n < 0 {
             globallogger.log("(fetchkcache) failed to read kernelcache")
-            return false
+            copyFailed = true
+            break
         }
 
         if n == 0 {
@@ -102,17 +104,20 @@ func fetchkcache() -> Bool {
 
             if w <= 0 {
                 globallogger.log("(fetchkcache) failed to write kernelcache")
-                return false
+                copyFailed = true
+                break
             }
 
             written += w
         }
+        if copyFailed { break }
 
         totalBytes += n
     }
 
-    if !FileManager.default.fileExists(atPath: outpath) || totalBytes == 0 {
-        globallogger.log("(fetchkcache) kernelcache output missing")
+    if copyFailed || !FileManager.default.fileExists(atPath: outpath) || totalBytes == 0 {
+        unlink(outpath)
+        globallogger.log("(fetchkcache) kernelcache output incomplete — removed truncated file")
         return false
     }
 
