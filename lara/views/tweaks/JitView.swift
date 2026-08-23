@@ -176,17 +176,12 @@ struct JitView: View {
 	        globallogger.log("(jit) enabling for \(bundleID)...")
 
 	        let runenable: () -> Void = {
-				guard let sbProc = mgr.sbProc else {
-					globallogger.log("(jit) error: sbProc is nil")
-					DispatchQueue.main.async { enablingbid = nil }
-					return
-				}
-
-				DispatchQueue.global(qos: .userInitiated).async {
+				var started = false
+				mgr.withSpringBoardRemoteCallAsync({ sbProc in
+					started = true
 					let err: Int32 = bundleID.withCString { (cStr: UnsafePointer<Int8>) -> Int32 in
 						return enable_jit(sbProc, cStr)
 					}
-
 					DispatchQueue.main.async {
 						if err == 0 {
 							globallogger.log("(jit) enabled for \(bundleID)")
@@ -195,7 +190,12 @@ struct JitView: View {
 						}
 						enablingbid = nil
 					}
-				}
+				}, completion: {
+					if !started {
+						globallogger.log("(jit) error: springboard remote call unavailable")
+						enablingbid = nil
+					}
+				})
 			}
 
 	        if mgr.rcready {

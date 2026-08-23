@@ -94,6 +94,8 @@ final class laramgr: ObservableObject {
     var sbProc: RemoteCall?
     /// Lazily created; never eager-init at mgr construction (RemoteCall init can return nil / trap).
     var ytProc: RemoteCall?
+    /// When true, `rcdestroy` was requested while `rcrunning` and should run once the session is idle.
+    private var rcdestroyPending: Bool = false
     
     static let shared = laramgr()
     static let fontpath = "/System/Library/Fonts/Core/SFUI.ttf"
@@ -732,7 +734,7 @@ final class laramgr: ObservableObject {
         }
         // Claim the RC session slot so rcinit/rcdestroy cannot tear down mid-init.
         rcrunning = true
-        defer { rcrunning = false }
+        defer { endRCRunning() }
         let proc = RemoteCall(process: "youtube", useMigFilterBypass: false)
         ytProc = proc
         if proc == nil {
@@ -761,7 +763,7 @@ final class laramgr: ObservableObject {
             return
         }
         rcrunning = true
-        defer { rcrunning = false }
+        defer { endRCRunning() }
 
         let proc: RemoteCall?
         if let existing = ytProc {
@@ -787,6 +789,87 @@ final class laramgr: ObservableObject {
         body(proc)
         #endif
     }
+
+    /// Run work against the SpringBoard RemoteCall while holding `rcrunning` so `rcdestroy` cannot UAF it.
+    func withSpringBoardRemoteCall(_ body: (RemoteCall) -> Void) {
+        #if !DISABLE_REMOTECALL
+        guard rcready else {
+            logmsg("(rc) springboard remote call not ready")
+            return
+        }
+        guard !rcrunning else {
+            logmsg("(rc) springboard remote call busy")
+            return
+        }
+        guard let proc = sbProc else {
+            logmsg("(rc) springboard remote call missing")
+            return
+        }
+        rcrunning = true
+        body(proc)
+        endRCRunning()
+        #endif
+    }
+
+    /// Async SpringBoard RC work: holds `rcrunning` until `work` finishes on a background queue.
+    func withSpringBoardRemoteCallAsync(_ work: @escaping (RemoteCall) -> Void, completion: (() -> Void)? = nil) {
+        #if !DISABLE_REMOTECALL
+        guard rcready else {
+            logmsg("(rc) springboard remote call not ready")
+            completion?()
+            return
+        }
+        guard !rcrunning else {
+            logmsg("(rc) springboard remote call busy")
+            completion?()
+            return
+        }
+        guard let proc = sbProc else {
+            logmsg("(rc) springboard remote call missing")
+            completion?()
+            return
+        }
+        rcrunning = true
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            work(proc)
+            DispatchQueue.main.async {
+                self?.endRCRunning()
+                completion?()
+            }
+        }
+        #else
+        completion?()
+        #endif
+    }
+
+    /// Pin the SpringBoard session for long-lived overlays (e.g. freaky dog). Pair with `unpinSpringBoardRemoteCall`.
+    @discardableResult
+    func pinSpringBoardRemoteCall() -> RemoteCall? {
+        #if !DISABLE_REMOTECALL
+        guard rcready, !rcrunning, let proc = sbProc else { return nil }
+        rcrunning = true
+        return proc
+        #else
+        return nil
+        #endif
+    }
+
+    func unpinSpringBoardRemoteCall() {
+        #if !DISABLE_REMOTECALL
+        guard rcrunning else { return }
+        endRCRunning()
+        #endif
+    }
+
+    private func endRCRunning() {
+        #if !DISABLE_REMOTECALL
+        rcrunning = false
+        if rcdestroyPending {
+            rcdestroyPending = false
+            rcdestroy()
+        }
+        #endif
+    }
     
     #if !DISABLE_REMOTECALL
     func rcinit(process: String, migbypass: Bool = false, completion: ((Bool) -> Void)? = nil) {
@@ -800,16 +883,18 @@ final class laramgr: ObservableObject {
         logmsg("initializing remote call on \(process)...")
         
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
-            self?.sbProc = RemoteCall(process: process, useMigFilterBypass: migbypass)
+            let proc = RemoteCall(process: process, useMigFilterBypass: migbypass)
             
             DispatchQueue.main.async {
                 guard let self = self else { return }
-                let success = self.sbProc != nil
+                // Publish sbProc only on the main thread — background writes race SwiftUI / other readers.
+                self.sbProc = proc
+                let success = proc != nil
                 if success {
                     self.logmsg("remote call initialized on \(process)")
                     self.rcLastError = nil
-                    self.rcrunning = false
                     self.rcready = true
+                    self.endRCRunning()
                 } else {
                     self.logmsg("remote call init failed on \(process)")
                     let error = RemoteCall.lastInitError()
@@ -819,7 +904,7 @@ final class laramgr: ObservableObject {
                     } else {
                         self.logmsg("remote call init failed on \(process)")
                     }
-                    self.rcrunning = false
+                    self.endRCRunning()
                 }
                 completion?(success)
             }
@@ -853,7 +938,6 @@ final class laramgr: ObservableObject {
                 let success = proc != nil
                 if success {
                     self.logmsg("remote call initialized on \(process)")
-                    self.rcrunning = false
                 } else {
                     let error = RemoteCall.lastInitError()
                     if let error, !error.isEmpty {
@@ -861,28 +945,31 @@ final class laramgr: ObservableObject {
                     } else {
                         self.logmsg("remote call init failed on \(process)")
                     }
-                    self.rcrunning = false
                 }
+                self.endRCRunning()
                 completion?(proc)
             }
         }
     }
     
     func rcdestroy(completion: (() -> Void)? = nil) {
-        guard rcready || sbProc != nil || ytProc != nil else {
+        guard rcready || sbProc != nil || ytProc != nil || rcdestroyPending else {
             completion?()
             return
         }
         // Do not tear down while rcinit / daemon wake / stable calls are in flight.
+        // Queue a real destroy for when endRCRunning() clears the session lock.
         guard !rcrunning else {
+            rcdestroyPending = true
             logmsg("remote call destroy deferred: session busy")
-            completion?()
+            // Do not invoke completion yet — caller must not assume teardown finished.
             return
         }
         
         logmsg("destroying remote call session...")
         rcready = false
         rcrunning = true
+        rcdestroyPending = false
         // Snapshot and clear on the calling thread so rcinit cannot race a new
         // sbProc into place while we destroy the previous session.
         let sb = sbProc
@@ -895,9 +982,15 @@ final class laramgr: ObservableObject {
             yt?.destroy()
             
             DispatchQueue.main.async {
+                // Prefer endRCRunning so a re-queued destroy during teardown is flushed.
                 self?.rcrunning = false
                 self?.logmsg("remote call session destroyed")
-                completion?()
+                if self?.rcdestroyPending == true {
+                    self?.rcdestroyPending = false
+                    self?.rcdestroy(completion: completion)
+                } else {
+                    completion?()
+                }
             }
         }
     }
@@ -917,7 +1010,6 @@ final class laramgr: ObservableObject {
 
             DispatchQueue.main.async {
                 guard let self else { return }
-                self.rcrunning = false
                 if success {
                     self.rcLastError = nil
                     self.logmsg("(persist) manual KRW transfer to launchd succeeded")
@@ -930,6 +1022,7 @@ final class laramgr: ObservableObject {
                         self.logmsg("(persist) manual KRW transfer to launchd failed")
                     }
                 }
+                self.endRCRunning()
                 completion?(success)
             }
         }
@@ -944,7 +1037,7 @@ final class laramgr: ObservableObject {
         guard rcready, !rcrunning, let sbProc else { return 0 }
         // Hold the session lock for the call so rcdestroy cannot free sbProc mid-flight.
         rcrunning = true
-        defer { rcrunning = false }
+        defer { endRCRunning() }
         let RTLD_DEFAULT = UnsafeMutableRawPointer(bitPattern: -2)
         let ptr = dlsym(RTLD_DEFAULT, name)
         var argsCopy = args

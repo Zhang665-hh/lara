@@ -36,8 +36,8 @@ struct RemoteView: View {
                     .textInputAutocapitalization(.never)
 
                 Button {
-                    run("Status Bar Time Format") {
-                        status_bar_time_format(mgr.sbProc, statusBarTimeFormat)
+                    run("Status Bar Time Format") { proc in
+                        status_bar_time_format(proc, statusBarTimeFormat)
                         return "status_bar_time_format() done"
                     }
                 } label: {
@@ -51,8 +51,8 @@ struct RemoteView: View {
 
             Section {
                 Button {
-                    run("Hide Icon Labels") {
-                        let hidden = hide_icon_labels(mgr.sbProc)
+                    run("Hide Icon Labels") { proc in
+                        let hidden = hide_icon_labels(proc)
                         return "hide_icon_labels() -> \(hidden)"
                     }
                 } label: {
@@ -84,8 +84,8 @@ struct RemoteView: View {
                 }
 
                 Button {
-                    run("Patch Home Screen Grid \(hsColumns)x\(hsRows)") {
-                        return patch_homescreen_grid(mgr.sbProc, Int32(hsColumns), Int32(hsRows))
+                    run("Patch Home Screen Grid \(hsColumns)x\(hsRows)") { proc in
+                        return patch_homescreen_grid(proc, Int32(hsColumns), Int32(hsRows))
                             ? "patch_homescreen_grid(\(hsColumns), \(hsRows)) -> ok"
                             : "patch_homescreen_grid(\(hsColumns), \(hsRows)) -> failed"
                     }
@@ -111,8 +111,8 @@ struct RemoteView: View {
                 }
 
                 Button {
-                    run("Apply Dock Columns=\(columns)") {
-                        let result = set_dock_icon_count(mgr.sbProc, Int32(columns))
+                    run("Apply Dock Columns=\(columns)") { proc in
+                        let result = set_dock_icon_count(proc, Int32(columns))
                         return result == 0
                             ? "set_dock_icon_count(\(columns)) -> ok"
                             : "set_dock_icon_count(\(columns)) -> failed (\(result))"
@@ -124,8 +124,8 @@ struct RemoteView: View {
 
             Section {
                 Button {
-                    run("Enable Upside Down") {
-                        let result = enable_upside_down(mgr.sbProc)
+                    run("Enable Upside Down") { proc in
+                        let result = enable_upside_down(proc)
                         return result == 0
                             ? "enable_upside_down() -> ok"
                             : "enable_upside_down() -> failed (\(result))"
@@ -137,8 +137,8 @@ struct RemoteView: View {
 
             Section {
                 Button {
-                    run("Enable Floating Dock") {
-                        let result = enable_floating_dock(mgr.sbProc)
+                    run("Enable Floating Dock") { proc in
+                        let result = enable_floating_dock(proc)
                         return result == 0
                             ? "enable_floating_dock() -> ok"
                             : "enable_floating_dock() -> failed (\(result))"
@@ -148,8 +148,8 @@ struct RemoteView: View {
                 }
                 
                 Button {
-                    run("Enable Grid App Switcher") {
-                        let result = enable_grid_app_switcher(mgr.sbProc)
+                    run("Enable Grid App Switcher") { proc in
+                        let result = enable_grid_app_switcher(proc)
                         return result == 0
                             ? "enable_grid_app_switcher() -> ok"
                             : "enable_grid_app_switcher() -> failed (\(result))"
@@ -159,8 +159,8 @@ struct RemoteView: View {
                 }
                 
                 Button {
-                    run("Enable UIKit Debug Overlay") {
-                        let result = enable_debug_overlay(mgr.sbProc)
+                    run("Enable UIKit Debug Overlay") { proc in
+                        let result = enable_debug_overlay(proc)
                         return result == 0
                             ? "enable_debug_overlay() -> ok"
                             : "enable_debug_overlay() -> failed (\(result))"
@@ -194,11 +194,15 @@ struct RemoteView: View {
                     Text("Memory Bandwidth").tag(10)
                 }
                 .onChange(of: performanceHUD) { newValue in
-                    set_performance_hud(mgr.sbProc, Int32(newValue))
+                    mgr.withSpringBoardRemoteCall { proc in
+                        set_performance_hud(proc, Int32(newValue))
+                    }
                 }
                 .onAppear {
-                    if mgr.rcrunning {
-                        performanceHUD = Int(get_performance_hud(mgr.sbProc))
+                    if mgr.rcready, !mgr.rcrunning {
+                        mgr.withSpringBoardRemoteCall { proc in
+                            performanceHUD = Int(get_performance_hud(proc))
+                        }
                     }
                 }
             } footer: {
@@ -362,7 +366,7 @@ struct RemoteView: View {
                 Toggle("MIG filter bypass", isOn: $customMigBypass)
 
                 Button {
-                    run("Custom RemoteCall \(customProcessName):\(customFunctionName)") {
+                    run("Custom RemoteCall \(customProcessName):\(customFunctionName)") { _ in
                         let process = customProcessName.trimmingCharacters(in: .whitespacesAndNewlines)
                         let function = customFunctionName.trimmingCharacters(in: .whitespacesAndNewlines)
                         guard !process.isEmpty else { return "custom: missing process name" }
@@ -519,19 +523,21 @@ struct RemoteView: View {
         }
         .navigationTitle(Text("Tweaks"))
         .onDisappear {
-            if freakyrunning, let proc = mgr.sbProc {
-                stopfreakydog(proc)
+            if freakyrunning {
+                stopfreakydog()
             }
         }
     }
 
-    private func run(_ name: String, _ work: @escaping () -> String, onComplete: ((String) -> Void)? = nil) {
-        guard mgr.rcready, !running else { return }
+    private func run(_ name: String, _ work: @escaping (RemoteCall) -> String, onComplete: ((String) -> Void)? = nil) {
+        guard mgr.rcready, !running, !mgr.rcrunning, mgr.sbProc != nil else { return }
         running = true
         mgr.logmsg("(rc) \(name)...")
 
-        DispatchQueue.global(qos: .userInitiated).async {
-            let result = work()
+        var started = false
+        mgr.withSpringBoardRemoteCallAsync({ proc in
+            started = true
+            let result = work(proc)
             DispatchQueue.main.async {
                 self.mgr.logmsg("(rc) \(result)")
                 onComplete?(result)
@@ -540,7 +546,11 @@ struct RemoteView: View {
                 }
                 self.running = false
             }
-        }
+        }, completion: {
+            if !started {
+                self.running = false
+            }
+        })
     }
 
     private func isRemoteCallFailure(_ result: String) -> Bool {
@@ -552,16 +562,20 @@ struct RemoteView: View {
     }
 
     private func togglefreakydog() {
-        guard mgr.rcready, let proc = mgr.sbProc else { return }
-
         if freakyrunning {
-            stopfreakydog(proc)
+            stopfreakydog()
+            return
+        }
+
+        guard let proc = mgr.pinSpringBoardRemoteCall() else {
+            mgr.logmsg("(rc) freaky dog unavailable (session busy or not ready)")
             return
         }
 
         let view = enable_freaky_dog_overlay(proc)
         guard view != 0 else {
             mgr.logmsg("(rc) enable_freaky_dog_overlay() failed")
+            mgr.unpinSpringBoardRemoteCall()
             return
         }
 
@@ -577,7 +591,7 @@ struct RemoteView: View {
         DispatchQueue.global(qos: .userInitiated).async {
             while true {
                 let shouldcontinue = DispatchQueue.main.sync { () -> Bool in
-                    self.freakyrunning && self.freakyseq == seq && self.mgr.rcready && self.mgr.sbProc != nil
+                    self.freakyrunning && self.freakyseq == seq && self.mgr.rcready
                 }
                 if !shouldcontinue {
                     break
@@ -590,7 +604,7 @@ struct RemoteView: View {
                 if result != 0 {
                     DispatchQueue.main.async {
                         self.mgr.logmsg("(rc) move_freaky_dog_overlay() failed: \(result)")
-                        self.stopfreakydog(proc)
+                        self.stopfreakydog()
                     }
                     break
                 }
@@ -600,11 +614,15 @@ struct RemoteView: View {
         }
     }
 
-    private func stopfreakydog(_ proc: RemoteCall) {
+    private func stopfreakydog() {
+        guard freakyrunning || mgr.rcrunning else { return }
         freakyrunning = false
         freakyseq += 1
-        let result = disable_freaky_dog_overlay(proc)
-        mgr.logmsg("(rc) disable_freaky_dog_overlay() -> \(result)")
+        if let proc = mgr.sbProc {
+            let result = disable_freaky_dog_overlay(proc)
+            mgr.logmsg("(rc) disable_freaky_dog_overlay() -> \(result)")
+        }
+        mgr.unpinSpringBoardRemoteCall()
     }
 
     private func parseRemoteCallArgs(_ text: String) -> (args: [UInt64], error: String?) {
