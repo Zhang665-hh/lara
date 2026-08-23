@@ -590,8 +590,11 @@ final class IconThemeManager: ObservableObject {
                             return
                         }
                         try? fm.createDirectory(at: processedThemesDir.appendingPathComponent(icon.themeName), withIntermediateDirectories: true, attributes: nil)
+                        // Claim pendingFixup before writes so a mid-app throw after partial
+                        // icon replacement still schedules restore / fixup.
+                        UserDefaults.standard.set(true, forKey: pendingFixupKey)
                         try change.app.setPNGIcons(icon: icon)
-                        // Count only after a successful write so pendingFixup reflects real changes.
+                        // Count only after a successful write so the final flag reflects real changes.
                         themedCount += 1
                     } else {
                         try change.app.restorePNGIcons()

@@ -794,15 +794,24 @@ final class laramgr: ObservableObject {
             logmsg("(rc) youtube remote call requires darksword first")
             return nil
         }
-        // Serialize vs rcdestroy/rcinit: never observe-then-use across a clear of ytProc.
-        if rcrunning {
-            return ytProc
+        // Serialize vs rcdestroy/rcinit on the main queue.
+        let decision: (busy: Bool, existing: RemoteCall?) = {
+            let body: () -> (Bool, RemoteCall?) = {
+                if self.rcrunning { return (true, self.ytProc) }
+                return (false, self.ytProc)
+            }
+            if Thread.isMainThread { return body() }
+            return DispatchQueue.main.sync(execute: body)
+        }()
+        if decision.busy {
+            return decision.existing
         }
-        if let existing = ytProc {
+        if let existing = decision.existing {
             return existing
         }
-        // Claim the RC session slot so rcinit/rcdestroy cannot tear down mid-init.
-        rcrunning = true
+        guard beginRCRunning() else {
+            return ytProc
+        }
         defer { endRCRunning() }
         let proc = RemoteCall(process: "youtube", useMigFilterBypass: false)
         ytProc = proc
@@ -827,11 +836,10 @@ final class laramgr: ObservableObject {
             logmsg("(rc) youtube remote call requires darksword first")
             return
         }
-        guard !rcrunning else {
+        guard beginRCRunning() else {
             logmsg("(rc) youtube remote call busy")
             return
         }
-        rcrunning = true
         defer { endRCRunning() }
 
         let proc: RemoteCall?
@@ -866,15 +874,15 @@ final class laramgr: ObservableObject {
             logmsg("(rc) springboard remote call not ready")
             return
         }
-        guard !rcrunning else {
+        guard beginRCRunning() else {
             logmsg("(rc) springboard remote call busy")
             return
         }
         guard let proc = sbProc else {
             logmsg("(rc) springboard remote call missing")
+            endRCRunning()
             return
         }
-        rcrunning = true
         body(proc)
         endRCRunning()
         #endif
@@ -888,17 +896,17 @@ final class laramgr: ObservableObject {
             completion?()
             return
         }
-        guard !rcrunning else {
+        guard beginRCRunning() else {
             logmsg("(rc) springboard remote call busy")
             completion?()
             return
         }
         guard let proc = sbProc else {
             logmsg("(rc) springboard remote call missing")
+            endRCRunning()
             completion?()
             return
         }
-        rcrunning = true
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             work(proc)
             DispatchQueue.main.async {
@@ -915,8 +923,8 @@ final class laramgr: ObservableObject {
     @discardableResult
     func pinSpringBoardRemoteCall() -> RemoteCall? {
         #if !DISABLE_REMOTECALL
-        guard rcready, !rcrunning, let proc = sbProc else { return nil }
-        rcrunning = true
+        guard rcready, let proc = sbProc else { return nil }
+        guard beginRCRunning() else { return nil }
         return proc
         #else
         return nil
@@ -930,24 +938,47 @@ final class laramgr: ObservableObject {
         #endif
     }
 
+    /// Atomically claim the RC session on the main queue (same gate style as beginFileOp).
+    @discardableResult
+    private func beginRCRunning() -> Bool {
+        #if !DISABLE_REMOTECALL
+        let body: () -> Bool = {
+            if self.rcrunning { return false }
+            self.rcrunning = true
+            return true
+        }
+        if Thread.isMainThread { return body() }
+        return DispatchQueue.main.sync(execute: body)
+        #else
+        return false
+        #endif
+    }
+
     private func endRCRunning() {
         #if !DISABLE_REMOTECALL
-        rcrunning = false
-        if rcdestroyPending {
-            rcdestroyPending = false
-            rcdestroy()
+        let finish: () -> Void = {
+            self.rcrunning = false
+            if self.rcdestroyPending {
+                self.rcdestroyPending = false
+                self.rcdestroy()
+            }
         }
+        if Thread.isMainThread { finish() }
+        else { DispatchQueue.main.sync(execute: finish) }
         #endif
     }
     
     #if !DISABLE_REMOTECALL
     func rcinit(process: String, migbypass: Bool = false, completion: ((Bool) -> Void)? = nil) {
-        guard dsready, !rcready, !rcrunning else {
+        guard dsready, !rcready else {
+            completion?(false)
+            return
+        }
+        guard beginRCRunning() else {
             completion?(false)
             return
         }
         
-        rcrunning = true
         rcLastError = nil
         logmsg("initializing remote call on \(process)...")
         
@@ -982,12 +1013,15 @@ final class laramgr: ObservableObject {
     
     func rcinitDaemon(serviceName: String, framework: String? = nil, process: String, migbypass: Bool = false, completion: ((RemoteCall?) -> Void)? = nil) {
         // Match rcinit/rcdestroy: refuse overlapping daemon wakes / stable calls.
-        guard dsready, rcready, !rcrunning, let sbProc else {
+        guard dsready, rcready, let sbProc else {
+            completion?(nil)
+            return
+        }
+        guard beginRCRunning() else {
             completion?(nil)
             return
         }
         
-        rcrunning = true
         logmsg("initializing remote call on \(process)...")
         
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
@@ -1028,7 +1062,7 @@ final class laramgr: ObservableObject {
         }
         // Do not tear down while rcinit / daemon wake / stable calls are in flight.
         // Queue a real destroy for when endRCRunning() clears the session lock.
-        guard !rcrunning else {
+        guard beginRCRunning() else {
             rcdestroyPending = true
             logmsg("remote call destroy deferred: session busy")
             // Do not invoke completion yet — caller must not assume teardown finished.
@@ -1037,7 +1071,6 @@ final class laramgr: ObservableObject {
         
         logmsg("destroying remote call session...")
         rcready = false
-        rcrunning = true
         rcdestroyPending = false
         // Snapshot and clear on the calling thread so rcinit cannot race a new
         // sbProc into place while we destroy the previous session.
@@ -1052,25 +1085,23 @@ final class laramgr: ObservableObject {
             
             DispatchQueue.main.async {
                 // Prefer endRCRunning so a re-queued destroy during teardown is flushed.
-                self?.rcrunning = false
                 self?.logmsg("remote call session destroyed")
-                if self?.rcdestroyPending == true {
-                    self?.rcdestroyPending = false
-                    self?.rcdestroy(completion: completion)
-                } else {
-                    completion?()
-                }
+                self?.endRCRunning()
+                completion?()
             }
         }
     }
 
     func stashKRWToLaunchd(completion: ((Bool) -> Void)? = nil) {
-        guard dsready, !rcrunning else {
+        guard dsready else {
+            completion?(false)
+            return
+        }
+        guard beginRCRunning() else {
             completion?(false)
             return
         }
 
-        rcrunning = true
         rcLastError = nil
         logmsg("(persist) manually transferring KRW primitives to launchd...")
 
@@ -1103,9 +1134,9 @@ final class laramgr: ObservableObject {
     //  - timeout: timeout in ms
     //  ret: return value from rc
     func rccall(name: String, args: [UInt64] = [], timeout: Int32 = 100) -> UInt64 {
-        guard rcready, !rcrunning, let sbProc else { return 0 }
+        guard rcready, let sbProc else { return 0 }
         // Hold the session lock for the call so rcdestroy cannot free sbProc mid-flight.
-        rcrunning = true
+        guard beginRCRunning() else { return 0 }
         defer { endRCRunning() }
         let RTLD_DEFAULT = UnsafeMutableRawPointer(bitPattern: -2)
         let ptr = dlsym(RTLD_DEFAULT, name)
