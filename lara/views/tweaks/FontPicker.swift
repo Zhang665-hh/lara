@@ -631,6 +631,28 @@ final class fontrepostore: ObservableObject {
             throw URLError(.unsupportedURL)
         }
         let (tempurl, response) = try await URLSession.shared.download(from: remoteurl)
+        // URLSession follows redirects — reject if the final URL left the allowlist.
+        if let finalURL = response.url {
+            guard finalURL.scheme?.lowercased() == "https" else {
+                try? FileManager.default.removeItem(at: tempurl)
+                throw URLError(.unsupportedURL)
+            }
+            if let allowedHost, let finalHost = finalURL.host,
+               finalHost.caseInsensitiveCompare(allowedHost) != .orderedSame {
+                try? FileManager.default.removeItem(at: tempurl)
+                throw URLError(.unsupportedURL)
+            }
+            if allowedHost == nil, let repoHint = response.url {
+                // When called without an explicit host pin, still require githubusercontent
+                // or same-host HTTPS (defense in depth against open redirects).
+                let host = (repoHint.host ?? "").lowercased()
+                let ok = host == "raw.githubusercontent.com" || host.hasSuffix(".githubusercontent.com")
+                if !ok {
+                    try? FileManager.default.removeItem(at: tempurl)
+                    throw URLError(.unsupportedURL)
+                }
+            }
+        }
         if let http = response as? HTTPURLResponse, !(200...299).contains(http.statusCode) {
             throw URLError(.badServerResponse)
         }
