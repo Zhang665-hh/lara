@@ -138,14 +138,14 @@ struct ContentView: View {
                     }
                 }
                 
-                // initalize vfs
+                // initialize vfs
                 if selectedmethod == .vfs {
                     LabeledContent(content: {
                         if mgr.vfsready {
                             Image(systemName: "checkmark.circle")
                         } else if mgr.vfsrunning {
                             HStack {
-                                Text("\(Int(mgr.dsprogress * 100))%")
+                                Text("\(Int(mgr.vfsprogress * 100))%")
                                 ProgressView()
                             }
                         } else if mgr.vfsattempted && mgr.vfsfailed {
@@ -206,7 +206,7 @@ struct ContentView: View {
                         Image(systemName: "xmark.circle")
                     }
                 }) {
-                    Button("Initalize RemoteCall", action: {
+                    Button("Initialize RemoteCall", action: {
                         mgr.rcinit(process: "SpringBoard", migbypass: false) { success in
                             if success {
                                 mgr.logmsg("rc init succeeded!")
