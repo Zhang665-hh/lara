@@ -109,6 +109,7 @@ struct LiquidGlassView: View {
                 let result = mgr.lara_overwritefile(target: gpCurrentPath, data: gpData, fallback_vfs: false)
                 guard result.ok else { throw "Overwrite failed: \(result.message)" }
                 gpCurrentDict = restored
+                gpLoaded = true
                 Alertinator.shared.alert(title: "Restored Liquid Glass!", body: "Reboot your device to see any changes")
             } else {
                 throw "No Global Prefs file found!"

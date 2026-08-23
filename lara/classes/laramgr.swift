@@ -96,6 +96,8 @@ final class laramgr: ObservableObject {
     var ytProc: RemoteCall?
     /// When true, `rcdestroy` was requested while `rcrunning` and should run once the session is idle.
     private var rcdestroyPending: Bool = false
+    /// Completion to invoke when a deferred rcdestroy finally runs.
+    private var rcdestroyPendingCompletion: (() -> Void)? = nil
     
     static let shared = laramgr()
     static let fontpath = "/System/Library/Fonts/Core/SFUI.ttf"
@@ -439,22 +441,22 @@ final class laramgr: ObservableObject {
     
     /// Nesting depth so lara_overwritefile -> vfsoverwrite* does not deadlock on the same gate.
     private var fileOpDepth: Int = 0
+    /// Recursive lock: same-thread VFS nesting is allowed; concurrent top-level callers are refused.
+    private let fileOpLock = NSRecursiveLock()
 
-    /// Begin a file overwrite critical section. Returns false if another top-level op is running.
+    /// Begin a file overwrite critical section. Returns false if another thread already holds the op.
     @discardableResult
     private func beginFileOp() -> Bool {
-        let body: () -> Bool = {
-            if self.fileOpDepth == 0 && self.fileopinprogress {
-                return false
-            }
+        guard fileOpLock.try() else { return false }
+        let body: () -> Void = {
             self.fileOpDepth += 1
             if self.fileOpDepth == 1 {
                 self.fileopinprogress = true
             }
-            return true
         }
-        if Thread.isMainThread { return body() }
-        return DispatchQueue.main.sync(execute: body)
+        if Thread.isMainThread { body() }
+        else { DispatchQueue.main.sync(execute: body) }
+        return true
     }
 
     private func endFileOp() {
@@ -466,6 +468,7 @@ final class laramgr: ObservableObject {
         }
         if Thread.isMainThread { body() }
         else { DispatchQueue.main.sync(execute: body) }
+        fileOpLock.unlock()
     }
 
         @discardableResult
@@ -873,8 +876,8 @@ final class laramgr: ObservableObject {
             endRCRunning()
             return
         }
+        defer { endRCRunning() }
         body(proc)
-        endRCRunning()
         #endif
     }
 
@@ -955,7 +958,9 @@ final class laramgr: ObservableObject {
             self.rcrunning = false
             if self.rcdestroyPending {
                 self.rcdestroyPending = false
-                self.rcdestroy()
+                let pendingCompletion = self.rcdestroyPendingCompletion
+                self.rcdestroyPendingCompletion = nil
+                self.rcdestroy(completion: pendingCompletion)
             }
         }
         if Thread.isMainThread { finish() }
@@ -1064,6 +1069,14 @@ final class laramgr: ObservableObject {
         // Queue a real destroy for when endRCRunning() clears the session lock.
         guard beginRCRunning() else {
             rcdestroyPending = true
+            // Keep the latest waiter so deferred teardown still signals completion.
+            if let completion {
+                let prev = rcdestroyPendingCompletion
+                rcdestroyPendingCompletion = {
+                    prev?()
+                    completion()
+                }
+            }
             logmsg("remote call destroy deferred: session busy")
             // Do not invoke completion yet — caller must not assume teardown finished.
             return

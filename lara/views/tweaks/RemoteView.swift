@@ -25,6 +25,8 @@ struct RemoteView: View {
     @State private var hsColumns: Int = 4
     @State private var freakyrunning: Bool = false
     @State private var freakyseq: Int = 0
+    /// True only while this overlay owns the SpringBoard RC pin.
+    @State private var freakyPinned: Bool = false
     /// Serializes move vs stop so unpin cannot race an in-flight overlay move.
     private let freakyMoveQueue = DispatchQueue(label: "lara.freaky.dog.move")
 
@@ -584,6 +586,7 @@ struct RemoteView: View {
         let seq = freakyseq + 1
         freakyseq = seq
         freakyrunning = true
+        freakyPinned = true
         mgr.logmsg("(rc) enable_freaky_dog_overlay() -> 0x\(String(view, radix: 16))")
 
         let screen = UIScreen.main.bounds
@@ -617,17 +620,22 @@ struct RemoteView: View {
     }
 
     private func stopfreakydog() {
-        guard freakyrunning || mgr.rcrunning else { return }
+        // Only tear down when this overlay owns the pin — never unpin a foreign RC session.
+        guard freakyrunning || freakyPinned else { return }
+        let shouldUnpin = freakyPinned
         freakyrunning = false
+        freakyPinned = false
         freakyseq += 1
         // Drain the move queue so disable/unpin cannot race an in-flight move_*.
         freakyMoveQueue.async {
             DispatchQueue.main.async {
-                if let proc = self.mgr.sbProc {
-                    let result = disable_freaky_dog_overlay(proc)
-                    self.mgr.logmsg("(rc) disable_freaky_dog_overlay() -> \(result)")
+                if shouldUnpin {
+                    if let proc = self.mgr.sbProc {
+                        let result = disable_freaky_dog_overlay(proc)
+                        self.mgr.logmsg("(rc) disable_freaky_dog_overlay() -> \(result)")
+                    }
+                    self.mgr.unpinSpringBoardRemoteCall()
                 }
-                self.mgr.unpinSpringBoardRemoteCall()
             }
         }
     }

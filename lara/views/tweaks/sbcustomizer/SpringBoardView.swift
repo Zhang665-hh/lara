@@ -320,9 +320,14 @@ struct SpringBoardView: View {
                 }
                 return succeeded
             }
+            // Unknown SpringBoard key — fail closed so UI cannot claim success for a no-op.
+            print("overwriteFile: unknown springboard key \(fileIdentifier)")
+            return false
         }
         
-        return true
+        // Unknown file type — fail closed.
+        print("overwriteFile: unsupported typeOfFile")
+        return false
     }
 }
 
