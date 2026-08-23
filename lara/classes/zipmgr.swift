@@ -323,6 +323,12 @@ public class ZipArchive {
     }
 
     private func computeDataOffset(lfhOffset: UInt64) throws -> UInt64 {
+        // Int(lfhOffset) traps when relativeOffset exceeds Int.max (ZIP64 bomb).
+        guard lfhOffset <= UInt64(Int.max) else {
+            error = "(zip) lfh offset overflows Int"
+            mgr.logmsg("\(error)")
+            throw ZipError.corruptArchive("\(error)")
+        }
         let off = Int(lfhOffset)
         guard off + 30 <= data.count else {
             error = "(zip) lfh truncated"

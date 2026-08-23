@@ -106,8 +106,12 @@ struct FontPicker: View {
                                     save(customfonts)
                                     return
                                 }
-                                let success = mgr.vfsoverwritefromlocalpath(target: selectedTarget.path, source: font.path)
-                                success ? mgr.logmsg("font changed to \(font.name)") : mgr.logmsg("failed to change font")
+                                let result = mgr.lara_overwritefile(target: selectedTarget.path, source: font.path)
+                                if result.ok {
+                                    mgr.logmsg("font changed to \(font.name)")
+                                } else {
+                                    mgr.logmsg("failed to change font: \(result.message)")
+                                }
                             } label: {
                                 Text(font.name)
                                     .font(viewfontfile(path: font.path, size: 17))
@@ -314,11 +318,13 @@ struct repofontrow: View {
 
         Button {
             if iddownloaded, let localurl {
-                let success = mgr.vfsoverwritefromlocalpath(
-                    target: laramgr.fontpath,
-                    source: localurl.path
+                let result = mgr.lara_overwritefile(target: laramgr.fontpath, source: localurl.path
                 )
-                success ? mgr.logmsg("font changed to \(font.name)") : mgr.logmsg("failed to change font")
+                if result.ok {
+                    mgr.logmsg("font changed to \(font.name)")
+                } else {
+                    mgr.logmsg("failed to change font: \(result.message)")
+                }
             } else {
                 Task {
                     await repostore.dlfont(font, repo: repo)
@@ -355,8 +361,12 @@ private struct repoemojirow: View {
             		mgr.logmsg("emoji font must be .ttc, got .\(localurl.pathExtension)")
             		return
         		}
-                let success = mgr.vfsoverwritefromlocalpath(target: emojipath, source: localurl.path)
-                success ? mgr.logmsg("emoji changed to \(emoji.name)") : mgr.logmsg("failed to change emojis")
+                let result = mgr.lara_overwritefile(target: emojipath, source: localurl.path)
+                if result.ok {
+                    mgr.logmsg("emoji changed to \(emoji.name)")
+                } else {
+                    mgr.logmsg("failed to change emojis: \(result.message)")
+                }
             } else {
                 Task { await repostore.dlemoji(emoji, repo: repo) }
             }

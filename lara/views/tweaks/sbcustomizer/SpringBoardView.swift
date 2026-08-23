@@ -274,14 +274,26 @@ struct SpringBoardView: View {
                             return false
                         }
                     } else {
+                        let target = "/System/Library/PrivateFrameworks/" + path
+                        // Backup once before destroying assets with ### — VFS refuses
+                        // size changes, but SBX rename can permanently trash .car files.
+                        let backupDir = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+                            .appendingPathComponent("lara_sb_backups", isDirectory: true)
+                        try? FileManager.default.createDirectory(at: backupDir, withIntermediateDirectories: true)
+                        let backupURL = backupDir.appendingPathComponent((path as NSString).lastPathComponent)
+                        if !FileManager.default.fileExists(atPath: backupURL.path),
+                           let original = try? Data(contentsOf: URL(fileURLWithPath: target)),
+                           !original.isEmpty {
+                            try? original.write(to: backupURL, options: .atomic)
+                        }
+
                         let randomGarbage = Data("###".utf8)
-                        
-                        let result = laramgr.shared.lara_overwritefile(target: "/System/Library/PrivateFrameworks/" + path, data: randomGarbage)
+                        let result = laramgr.shared.lara_overwritefile(target: target, data: randomGarbage)
                         
                         if result.ok {
                             print("i hope it worked")
                         } else {
-                            print("it didn't")
+                            print("it didn't: \(result.message)")
                             succeeded = false
                         }
                     }

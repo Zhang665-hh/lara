@@ -122,9 +122,9 @@ struct WhitelistView: View {
         var failures: [String] = []
 
         for f in files {
-            let result = sbxwrite(path: f.path, data: data)
-            if !result.hasPrefix("ok") {
-                failures.append("\(f.name): \(result)")
+            let result = mgr.lara_overwritefile(target: f.path, data: data)
+            if !result.ok {
+                failures.append("\(f.name): \(result.message)")
             }
         }
 
@@ -196,6 +196,10 @@ struct WhitelistView: View {
     private func vfsfallback(path: String, data: Data, reason: String) -> String {
         guard mgr.vfsready else {
             return reason + " | vfs not ready"
+        }
+        let targetSize = mgr.vfssize(path: path)
+        if targetSize > 0 && Int64(data.count) != targetSize {
+            return reason + " | vfs requires exact size \(targetSize), got \(data.count) (SBX rename required)"
         }
         let ok = mgr.vfsoverwritewithdata(target: path, data: data)
         return ok ? "ok (vfs overwrite)" : reason + " | vfs overwrite failed"

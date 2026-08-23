@@ -607,7 +607,8 @@ struct CardView: View {
             return data
         }
         if mgr.vfsready {
-            if let size = mgr.vfssize(path: path), size > maxsize { return nil }
+            let size = mgr.vfssize(path: path)
+            if size > Int64(maxsize) { return nil }
             return mgr.vfsread(path: path, maxSize: maxsize)
         }
         return nil
