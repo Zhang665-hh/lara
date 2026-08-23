@@ -665,9 +665,8 @@ struct GestaltView: View {
 
             if result.ok, let value = result.value as? Bool {
                 nuggetValues[key] = value
-            } else {
-                nuggetValues[key] = false
             }
+            // Leave prior/unknown state untouched on read failure - do not invent false.
         }
     }
 
@@ -680,6 +679,7 @@ struct GestaltView: View {
                 nuggetValues[key] ?? false
             },
             set: { enabled in
+                let previous = nuggetValues[key]
                 nuggetValues[key] = enabled
 
                 let result = mgr.setplistvalue(
@@ -689,6 +689,12 @@ struct GestaltView: View {
                 )
 
                 if !result.ok {
+                    // Revert optimistic UI so toggle state matches disk.
+                    if let previous {
+                        nuggetValues[key] = previous
+                    } else {
+                        nuggetValues.removeValue(forKey: key)
+                    }
                     Alertinator.shared.alert(
                         title: "Failed to Apply Tweak",
                         body: result.message
@@ -735,15 +741,25 @@ struct GestaltView: View {
             ("BKDigitizerVisualizeTouches", fileloc.backboardd.rawValue)
         ]
 
+        var firstFailure: String? = nil
         for (key, path) in tweaks {
-            _ = mgr.setplistvalue(
+            let result = mgr.setplistvalue(
                 path: path,
                 key: (key, nil),
                 force: true
             )
+            if !result.ok && firstFailure == nil {
+                firstFailure = result.message
+            }
         }
 
         loadnuggettweaks()
+        if let firstFailure {
+            Alertinator.shared.alert(
+                title: "Failed to Reset Some Tweaks",
+                body: firstFailure
+            )
+        }
     }
 }
 
