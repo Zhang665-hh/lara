@@ -338,6 +338,11 @@ final class laramgr: ObservableObject {
             print("(vfs) not ready")
             return false
         }
+        guard beginFileOp() else {
+            print("(vfs) file overwrite already in progress")
+            return false
+        }
+        defer { endFileOp() }
         
         guard FileManager.default.fileExists(atPath: source) else {
             print("(vfs) source file not found: \(source)")
@@ -359,6 +364,8 @@ final class laramgr: ObservableObject {
     
     func vfsoverwritewithdata(target: String, data: Data) -> Bool {
         guard vfsready else { return false }
+        guard beginFileOp() else { return false }
+        defer { endFileOp() }
         let tmp = NSTemporaryDirectory() + "vfs_src_\(arc4random()).bin"
         // Durable temp before mmap-based VFS overwrite (crash mid-write must not feed a partial source).
         let fd = open(tmp, O_WRONLY | O_CREAT | O_TRUNC, 0o600)
@@ -430,12 +437,35 @@ final class laramgr: ObservableObject {
         return (false, "\(prefix)sbx rename failed: errno=\(errno) \(String(cString: strerror(errno)))")
     }
     
-    private func setFileOpInProgress(_ value: Bool) {
-        if Thread.isMainThread {
-            fileopinprogress = value
-        } else {
-            DispatchQueue.main.sync { self.fileopinprogress = value }
+    /// Nesting depth so lara_overwritefile -> vfsoverwrite* does not deadlock on the same gate.
+    private var fileOpDepth: Int = 0
+
+    /// Begin a file overwrite critical section. Returns false if another top-level op is running.
+    @discardableResult
+    private func beginFileOp() -> Bool {
+        let body: () -> Bool = {
+            if self.fileOpDepth == 0 && self.fileopinprogress {
+                return false
+            }
+            self.fileOpDepth += 1
+            if self.fileOpDepth == 1 {
+                self.fileopinprogress = true
+            }
+            return true
         }
+        if Thread.isMainThread { return body() }
+        return DispatchQueue.main.sync(execute: body)
+    }
+
+    private func endFileOp() {
+        let body: () -> Void = {
+            self.fileOpDepth = max(0, self.fileOpDepth - 1)
+            if self.fileOpDepth == 0 {
+                self.fileopinprogress = false
+            }
+        }
+        if Thread.isMainThread { body() }
+        else { DispatchQueue.main.sync(execute: body) }
     }
 
         @discardableResult
@@ -446,11 +476,10 @@ final class laramgr: ObservableObject {
         guard FileManager.default.fileExists(atPath: source) else {
             return (false, "source file not found: \(source)")
         }
-        if fileopinprogress {
+        guard beginFileOp() else {
             return (false, "file overwrite already in progress")
         }
-        setFileOpInProgress(true)
-        defer { setFileOpInProgress(false) }
+        defer { endFileOp() }
         
         let result: (ok: Bool, message: String)
         if sbxready {
@@ -491,11 +520,10 @@ final class laramgr: ObservableObject {
         guard !data.isEmpty else {
             return (false, "refusing to overwrite with empty data")
         }
-        if fileopinprogress {
+        guard beginFileOp() else {
             return (false, "file overwrite already in progress")
         }
-        setFileOpInProgress(true)
-        defer { setFileOpInProgress(false) }
+        defer { endFileOp() }
         let result = sbxready ? sbxoverwrite(path: target, data: data) : (false, "sbx not ready")
         if result.0 {
             return result
@@ -514,6 +542,11 @@ final class laramgr: ObservableObject {
     }
     
     func vfszeropage(at path: String, dumb: Bool) -> Bool {
+        guard beginFileOp() else {
+            self.logmsg("(vfs) file overwrite already in progress")
+            return false
+        }
+        defer { endFileOp() }
         if dumb {
             guard vfsready else {
                 self.logmsg("(vfs) zerofile failed (vfs not ready)")

@@ -115,9 +115,19 @@ struct LaraThemedApp: Identifiable, Hashable {
             guard let originalURL = backedUpIconURL(fileName: iconName) else { continue }
             let iconURL = bundleURL.appendingPathComponent(iconName)
             let data = try Data(contentsOf: originalURL)
+            // Match setPNGIcons: mobile ownership for write, then restore to _installd.
+            let chown1 = SantanderChown.chown(path: iconURL.path, uid: 501, gid: 501)
+            if !chown1 {
+                throw NSError(domain: "IconThemer", code: 6, userInfo: [NSLocalizedDescriptionKey: "\(bundleIdentifier): restore chown(501) failed"])
+            }
+            defer { _ = SantanderChown.chown(path: iconURL.path, uid: 33, gid: 33) }
             let result = laramgr.shared.lara_overwritefile(target: iconURL.path, data: data)
             if !result.ok {
                 throw NSError(domain: "IconThemer", code: 2, userInfo: [NSLocalizedDescriptionKey: "\(bundleIdentifier): \(result.message)"])
+            }
+            let chown2 = SantanderChown.chown(path: iconURL.path, uid: 33, gid: 33)
+            if !chown2 {
+                throw NSError(domain: "IconThemer", code: 6, userInfo: [NSLocalizedDescriptionKey: "\(bundleIdentifier): restore chown(33) failed"])
             }
         }
     }
