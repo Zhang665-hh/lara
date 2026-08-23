@@ -13,26 +13,22 @@ import Compression
 import Combine
 
 fileprivate func passcodeMatchFilenameToKey(_ filename: String) -> String? {
-
-        let lowercased = filename.lowercased()
+        let base = (filename as NSString).lastPathComponent.lowercased()
+        let stem = (base as NSString).deletingPathExtension
+        // Exact stem "0"..."9"
+        if let n = Int(stem), (0...9).contains(n) { return String(n) }
         // Prefer multi-digit-safe tokens; scan 9...0 so "-10-" cannot match as "-1-".
+        // Do NOT use bare hasSuffix("0.png") — that maps "10.png" / "button0.png" to digit 0.
         for i in (0...9).reversed() {
             let s = String(i)
-            if lowercased.contains("other-2-\(s)--dark") ||
-                lowercased.contains("-\(s)-") ||
-                lowercased.contains("-\(s)@") ||
-                lowercased.contains("_\(s)_") ||
-                lowercased.contains("_\(s)@") ||
-                lowercased.hasSuffix("/\(s).png") ||
-                lowercased.hasSuffix("/\(s).jpg") ||
-                lowercased.hasSuffix("/\(s).jpeg") ||
-                lowercased.hasSuffix("\(s).png") ||
-                lowercased.hasSuffix("\(s).jpg") ||
-                lowercased.hasSuffix("\(s).jpeg") {
+            if base.contains("other-2-\(s)--dark") ||
+                stem == s ||
+                stem.hasPrefix("\(s)-") || stem.hasSuffix("-\(s)") ||
+                stem.contains("-\(s)-") || stem.contains("_\(s)_") ||
+                stem.contains("-\(s)@") || stem.contains("_\(s)@") {
                 return s
             }
         }
-        
         return nil
     }
 

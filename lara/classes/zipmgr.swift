@@ -159,19 +159,24 @@ public class ZipArchive {
             mgr.logmsg("\(error)")
             throw ZipError.tooLarge("\(error)")
         }
-        guard extractedTotal + entry.uncompressedSize <= Self.maxUncompressedArchive else {
+        guard entry.uncompressedSize <= Self.maxUncompressedArchive - extractedTotal else {
             error = "(zip) archive uncompressed budget exceeded"
             mgr.logmsg("\(error)")
             throw ZipError.tooLarge("\(error)")
         }
 
-        let end = entry.dataOffset + entry.compressedSize
-        guard entry.dataOffset < UInt64(data.count),
-              end <= data.count else {
+        guard entry.dataOffset < UInt64(data.count) else {
             error = "(zip) entry data out of bounds"
             mgr.logmsg("\(error)")
             throw ZipError.corruptArchive("\(error)")
         }
+        // Reject wraparound: compressedSize must fit after dataOffset within the buffer.
+        guard entry.compressedSize <= UInt64(data.count) - entry.dataOffset else {
+            error = "(zip) entry data out of bounds"
+            mgr.logmsg("\(error)")
+            throw ZipError.corruptArchive("\(error)")
+        }
+        let end = entry.dataOffset + entry.compressedSize
 
         let result: Data
         switch entry.compressionMethod {
