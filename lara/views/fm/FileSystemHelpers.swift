@@ -300,6 +300,18 @@ enum santanderfs {
 
     static func writefile(path: String, data: Data, readsbx: Bool, writevfs: Bool) -> Bool {
         if writevfs {
+            // VFS overwrite cannot grow files. Prefer direct write when content expands.
+            if let attrs = try? FileManager.default.attributesOfItem(atPath: path),
+               let size = attrs[.size] as? NSNumber,
+               data.count > size.intValue {
+                do {
+                    clearImmutableIfPossible(atPath: path)
+                    try data.write(to: URL(fileURLWithPath: path), options: .atomic)
+                    return true
+                } catch {
+                    return false
+                }
+            }
             return laramgr.shared.vfsoverwritewithdata(target: path, data: data)
         }
         guard readsbx else { return false }

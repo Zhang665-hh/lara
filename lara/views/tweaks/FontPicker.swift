@@ -521,6 +521,10 @@ private func safedownloadurl(in directory: URL, remoteFilename: String) -> URL? 
 }
 
 final class fontrepostore: ObservableObject {
+    /// Cap auto-downloads so a hostile repo JSON cannot fill the container.
+    private static let maxAutoFontDownloads = 40
+    private static let maxFontBytes: Int64 = 32 * 1024 * 1024
+
     @Published var repos: [fontrepostate] = []
     @Published var downloading: Set<String> = []
 
@@ -597,13 +601,39 @@ final class fontrepostore: ObservableObject {
     }
 
     func ensurerepofontsdownloaded(_ repo: fontrepodata) async {
+        var remaining = Self.maxAutoFontDownloads
         for font in repo.fonts {
+            guard remaining > 0 else { break }
             guard let localurl = localfonturl(repo: repo, font: font) else { continue }
             if FileManager.default.fileExists(atPath: localurl.path) {
                 continue
             }
             await dlfont(font, repo: repo)
+            remaining -= 1
         }
+    }
+
+
+    private func downloadRemoteFile(from remoteurl: URL, to localurl: URL) async throws {
+        guard let scheme = remoteurl.scheme?.lowercased(), scheme == "https" || scheme == "http" else {
+            throw URLError(.unsupportedURL)
+        }
+        let (tempurl, response) = try await URLSession.shared.download(from: remoteurl)
+        if let http = response as? HTTPURLResponse, !(200...299).contains(http.statusCode) {
+            throw URLError(.badServerResponse)
+        }
+        let attrs = try FileManager.default.attributesOfItem(atPath: tempurl.path)
+        let size = (attrs[.size] as? NSNumber)?.int64Value ?? 0
+        guard size > 0, size <= Self.maxFontBytes else {
+            try? FileManager.default.removeItem(at: tempurl)
+            throw URLError(.dataLengthExceedsMaximum)
+        }
+        let fm = FileManager.default
+        try fm.createDirectory(at: localurl.deletingLastPathComponent(), withIntermediateDirectories: true)
+        if fm.fileExists(atPath: localurl.path) {
+            try fm.removeItem(at: localurl)
+        }
+        try fm.moveItem(at: tempurl, to: localurl)
     }
 
     func dlfont(_ font: fontrepofont, repo: fontrepodata) async {
@@ -615,13 +645,7 @@ final class fontrepostore: ObservableObject {
         if FileManager.default.fileExists(atPath: localurl.path) { return }
 
         do {
-            let (tempurl, _) = try await URLSession.shared.download(from: remoteurl)
-            let fm = FileManager.default
-            try fm.createDirectory(at: localurl.deletingLastPathComponent(), withIntermediateDirectories: true)
-            if fm.fileExists(atPath: localurl.path) {
-                try fm.removeItem(at: localurl)
-            }
-            try fm.moveItem(at: tempurl, to: localurl)
+            try await downloadRemoteFile(from: remoteurl, to: localurl)
         } catch {
             _ = await MainActor.run {
                 if let idx = repos.firstIndex(where: { $0.data?.name == repo.name }) {
@@ -640,13 +664,7 @@ final class fontrepostore: ObservableObject {
         if FileManager.default.fileExists(atPath: localurl.path) { return }
 
         do {
-            let (tempurl, _) = try await URLSession.shared.download(from: remoteurl)
-            let fm = FileManager.default
-            try fm.createDirectory(at: localurl.deletingLastPathComponent(), withIntermediateDirectories: true)
-            if fm.fileExists(atPath: localurl.path) {
-                try fm.removeItem(at: localurl)
-            }
-            try fm.moveItem(at: tempurl, to: localurl)
+            try await downloadRemoteFile(from: remoteurl, to: localurl)
         } catch {
             _ = await MainActor.run {
                 if let idx = repos.firstIndex(where: { $0.data?.name == repo.name }) {

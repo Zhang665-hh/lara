@@ -54,6 +54,7 @@ enum carparser {
 
         for _ in 0..<varcount {
             let id = Int(try tou32be(data, p)); p += 4
+            try require(data, p, 1)
             let len = Int(data[p]); p += 1
 
             try require(data, p, len)
