@@ -444,6 +444,14 @@ struct santanderdirview: View {
         msg = santandermsg(title: "Copied", text: entry.name)
     }
 
+
+    private func isSafeRelativeName(_ name: String) -> Bool {
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.isEmpty || trimmed == "." || trimmed == ".." { return false }
+        if trimmed.contains("/") { return false }
+        return true
+    }
+
     private func rename(_ entry: santanderitem, newname: String) {
         guard readsbx else {
             msg = santandermsg(title: "Rename Unavailable", text: "Rename is only supported in SBX mode.")
@@ -455,8 +463,8 @@ struct santanderdirview: View {
             msg = santandermsg(title: "Rename Failed", text: "Name cannot be empty.")
             return
         }
-        guard !trimmed.contains("/") else {
-            msg = santandermsg(title: "Rename Failed", text: "Name cannot contain '/'.")
+        guard isSafeRelativeName(trimmed) else {
+            msg = santandermsg(title: "Rename Failed", text: "Name cannot contain '/', '.', or '..'.")
             return
         }
         guard trimmed != entry.name else { return }
@@ -487,8 +495,8 @@ struct santanderdirview: View {
             msg = santandermsg(title: "New Folder Failed", text: "Name cannot be empty.")
             return
         }
-        guard !trimmed.contains("/") else {
-            msg = santandermsg(title: "New Folder Failed", text: "Name cannot contain '/'.")
+        guard isSafeRelativeName(trimmed) else {
+            msg = santandermsg(title: "New Folder Failed", text: "Name cannot contain '/', '.', or '..'.")
             return
         }
 
@@ -517,8 +525,8 @@ struct santanderdirview: View {
             msg = santandermsg(title: "Create File Failed", text: "Name cannot be empty.")
             return
         }
-        guard !trimmed.contains("/") else {
-            msg = santandermsg(title: "Create File Failed", text: "Name cannot contain '/'.")
+        guard isSafeRelativeName(trimmed) else {
+            msg = santandermsg(title: "Create File Failed", text: "Name cannot contain '/', '.', or '..'.")
             return
         }
 

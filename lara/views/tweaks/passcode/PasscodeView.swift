@@ -387,17 +387,21 @@ struct PasscodeView: View {
     
     func matchFilenameToKey(_ filename: String) -> String? {
         let lowercased = filename.lowercased()
-        
-        for i in 0...9 {
-            if lowercased.contains("other-2-\(i)--dark") ||
-                lowercased.contains("-\(i)-") ||
-                lowercased.contains("-\(i)@") ||
-                lowercased.contains("_\(i)_") ||
-                lowercased.contains("_\(i)@") ||
-                lowercased.contains("/\(i).png") ||
-                lowercased.contains("/\(i).jpg") ||
-                lowercased.contains("/\(i).jpeg") {
-                return String(i)
+        // Prefer multi-digit-safe tokens; scan 9...0 so "-10-" cannot match as "-1-".
+        for i in (0...9).reversed() {
+            let s = String(i)
+            if lowercased.contains("other-2-\(s)--dark") ||
+                lowercased.contains("-\(s)-") ||
+                lowercased.contains("-\(s)@") ||
+                lowercased.contains("_\(s)_") ||
+                lowercased.contains("_\(s)@") ||
+                lowercased.hasSuffix("/\(s).png") ||
+                lowercased.hasSuffix("/\(s).jpg") ||
+                lowercased.hasSuffix("/\(s).jpeg") ||
+                lowercased.hasSuffix("\(s).png") ||
+                lowercased.hasSuffix("\(s).jpg") ||
+                lowercased.hasSuffix("\(s).jpeg") {
+                return s
             }
         }
         
@@ -437,13 +441,8 @@ struct PasscodeView: View {
                 let lower = file.lowercased()
                 guard lower.hasSuffix(".png") else { continue }
 
-                for i in 0...9 {
-                    if lower.contains("other-2-\(i)--dark") ||
-                        lower.contains("-\(i)-") ||
-                        lower.contains("_\(i)_") ||
-                        lower.contains("_\(i)@") {
-                        targets[String(i), default: []].append("\(basePath)/\(file)")
-                    }
+                if let key = matchFilenameToKey(file) {
+                    targets[key, default: []].append("\(basePath)/\(file)")
                 }
             }
 

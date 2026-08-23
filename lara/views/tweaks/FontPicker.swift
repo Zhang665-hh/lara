@@ -166,14 +166,17 @@ struct FontPicker: View {
         let dir = fm.urls(for: .documentDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("Custom")
         try? fm.createDirectory(at: dir, withIntermediateDirectories: true)
-        let dest = dir.appendingPathComponent(url.lastPathComponent)
+        guard let dest = safedownloadurl(in: dir, remoteFilename: url.lastPathComponent) else {
+            print("font import rejected unsafe filename:", url.lastPathComponent)
+            return
+        }
 
         do {
             if !fm.fileExists(atPath: dest.path) {
                 try fm.copyItem(at: url, to: dest)
             }
 
-            let name = url.deletingPathExtension().lastPathComponent
+            let name = dest.deletingPathExtension().lastPathComponent
             let font = importedfont(name: name, path: dest.path)
 
             if !customfonts.contains(where: {$0.name == name}) {

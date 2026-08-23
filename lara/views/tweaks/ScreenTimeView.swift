@@ -88,7 +88,7 @@ struct ScreenTimeView: View {
             }
         }
         .navigationTitle("Screen Time")
-        .alert("Result", isPresented: .constant(lastResult != nil)) {
+        .alert("Result", isPresented: Binding(get: { lastResult != nil }, set: { if !$0 { lastResult = nil } })) {
             Button("OK") { lastResult = nil }
         } message: {
             Text(lastResult ?? "")

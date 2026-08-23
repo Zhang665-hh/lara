@@ -122,7 +122,7 @@ final class PasscodeGalleryManager: ObservableObject {
         Task { await refreshRepos() }
     }
 
-    func downloadAndImport(_ theme: PasscodeGalleryTheme) async throws {
+    func downloadAndImport(_ theme: PasscodeGalleryTheme) async throws -> URL {
         guard let fileURL = downloadURL(for: theme) else { throw URLError(.badURL) }
         downloading.insert(theme.id)
         defer { downloading.remove(theme.id) }
@@ -140,6 +140,7 @@ final class PasscodeGalleryManager: ObservableObject {
             throw URLError(.cannotWriteToFile)
         }
         try data.write(to: dest, options: .atomic)
+        return dest
     }
 
     private func fetchRepo(_ urlString: String, forceRefresh: Bool = false) async throws -> PasscodeRepoData {

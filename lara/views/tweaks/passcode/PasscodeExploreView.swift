@@ -20,10 +20,7 @@ struct PasscodeExploreView: View {
     
     private func handleDownload(_ theme: PasscodeGalleryTheme) async {
         do {
-            try await gallery.downloadAndImport(theme)
-            let dest = FileManager.default
-                .urls(for: .documentDirectory, in: .userDomainMask)[0]
-                .appendingPathComponent(theme.name + ".passthm")
+            let dest = try await gallery.downloadAndImport(theme)
             onImport?(dest)
             dismiss()
         } catch { alertMessage = error.localizedDescription }

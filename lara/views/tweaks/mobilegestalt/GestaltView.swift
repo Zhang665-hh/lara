@@ -430,6 +430,9 @@ struct GestaltView: View {
             if mgEnableDeviceName {
                 ArtworkDict["ArtworkDeviceProductDescription"] = mgDeviceName
             }
+            // Write nested Artwork dict (and CacheExtra itself) back — otherwise new dicts are dropped.
+            cacheExtra["oPeik/9e8lQWMszEjbPzng"] = ArtworkDict
+            mgCurrentDict["CacheExtra"] = cacheExtra
             
             // then, check to make sure it's actually valid
             if !vaildateCacheExtra(mgCurrentDict) { throw "MobileGestalt is not vaild! Please restart the app." }
@@ -491,7 +494,7 @@ struct GestaltView: View {
     private func mgKeyBinding<T: Equatable>(_ keys: [String], type: T.Type = Int.self, defaultValue: T? = 0, enableValue: T? = 1) -> Binding<Bool>  {
         // immediately return false if it can't find cacheextra, again why is this here? i think it's safety.
         guard let cacheExtra = mgCurrentDict["CacheExtra"] as? NSMutableDictionary else {
-            return State(initialValue: false).projectedValue
+            return Binding.constant(false)
         }
         
         // then return the binding
@@ -516,7 +519,7 @@ struct GestaltView: View {
     private func mgTrollPadBinding() -> Binding<Bool> {
         guard let cacheData = mgCurrentDict["CacheData"] as? NSMutableData,
                 let cacheExtra = mgCurrentDict["CacheExtra"] as? NSMutableDictionary else {
-            return State(initialValue: false).projectedValue
+            return Binding.constant(false)
         }
         let valueOffset = findcachedataoff("mtrAoWJ3gsq+I90ZnQ0vQw")
         let keys = [
@@ -550,7 +553,7 @@ struct GestaltView: View {
     
     func mgRegionRestrictionsBinding() -> Binding<Bool> {
         guard let cacheExtra = mgCurrentDict["CacheExtra"] as? NSMutableDictionary else {
-            return State(initialValue: false).projectedValue
+            return Binding.constant(false)
         }
         
         return Binding<Bool>(
@@ -573,7 +576,7 @@ struct GestaltView: View {
     
     func mgInternalStuffBinding() -> Binding<Bool> {
         guard let cacheData = mgCurrentDict["CacheData"] as? NSMutableData else {
-            return State(initialValue: false).projectedValue
+            return Binding.constant(false)
         }
         
         let off_appleInternalInstall = findcachedataoff("EqrsVvjcYDdxHBiQmGhAWw")
