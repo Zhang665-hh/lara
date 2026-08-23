@@ -157,15 +157,22 @@ struct WhitelistView: View {
         }
         defer { close(fd) }
 
-        let result = data.withUnsafeBytes { ptr in
-            write(fd, ptr.baseAddress, ptr.count)
+        var written = 0
+        let ok = data.withUnsafeBytes { ptr -> Bool in
+            guard let base = ptr.baseAddress else { return ptr.count == 0 }
+            while written < ptr.count {
+                let n = write(fd, base.advanced(by: written), ptr.count - written)
+                if n <= 0 { return false }
+                written += n
+            }
+            return true
         }
 
-        if result == -1 {
+        if !ok {
             return vfsfallback(path: path, data: data, reason: "write failed: errno=\(errno) \(String(cString: strerror(errno)))")
         }
 
-        return "ok (\(result) bytes)"
+        return "ok (\(written) bytes)"
     }
 
     private func vfsfallback(path: String, data: Data, reason: String) -> String {

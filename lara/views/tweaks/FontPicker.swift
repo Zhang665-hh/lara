@@ -170,6 +170,8 @@ struct FontPicker: View {
             print("font import rejected unsafe filename:", url.lastPathComponent)
             return
         }
+        let scoped = url.startAccessingSecurityScopedResource()
+        defer { if scoped { url.stopAccessingSecurityScopedResource() } }
 
         do {
             if !fm.fileExists(atPath: dest.path) {

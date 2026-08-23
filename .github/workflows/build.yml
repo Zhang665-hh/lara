@@ -20,6 +20,7 @@ jobs:
           python3 scripts/checks/check_no_malware.py
           python3 scripts/checks/check_support_matrix.py
           python3 scripts/checks/check_licenses.py
+          python3 scripts/checks/check_force_unwraps.py
 
   build:
     needs: checks

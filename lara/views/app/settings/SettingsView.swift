@@ -147,8 +147,9 @@ struct SettingsView: View {
                                 .foregroundColor(.primary)
                             
                             Text("1. Download the IPSW tool for your device.")
-                            Link("https://github.com/blacktop/ipsw/releases",
-                                 destination: URL(string: "https://github.com/blacktop/ipsw/releases")!)
+                            if let ipswURL = URL(string: "https://github.com/blacktop/ipsw/releases") {
+                                Link("https://github.com/blacktop/ipsw/releases", destination: ipswURL)
+                            }
                             
                             Text("2. Extract the archive.")
                             Text("3. Open Terminal.")

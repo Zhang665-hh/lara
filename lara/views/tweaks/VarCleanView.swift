@@ -246,6 +246,21 @@ private func loadvarcleangroups() -> [varcleangroup] {
     }
 }
 
+
+private func isSafeVarCleanName(_ name: String) -> Bool {
+    if name.isEmpty || name == "." || name == ".." { return false }
+    if name.contains("/") || name.contains("\\") { return false }
+    return true
+}
+
+private func isPath(_ path: String, under base: String) -> Bool {
+    let resolved = URL(fileURLWithPath: path).standardizedFileURL.path
+    let root = URL(fileURLWithPath: base).standardizedFileURL.path
+    if resolved == root { return true }
+    let prefix = root.hasSuffix("/") ? root : root + "/"
+    return resolved.hasPrefix(prefix)
+}
+
 private func probepaths(
     for basepath: String,
     blacklist: [Any],
@@ -256,7 +271,9 @@ private func probepaths(
 
     for entry in blacklist {
         if let name = entry as? String, !name.isEmpty {
+            guard isSafeVarCleanName(name) else { continue }
             let probepath = (basepath as NSString).appendingPathComponent(name)
+            guard isPath(probepath, under: basepath) else { continue }
             if seenpaths.insert(probepath).inserted {
                 out.append(probepath)
             }
@@ -273,7 +290,9 @@ private func probepaths(
 
         let entries = direntries(atpath: basepath, cache: &direntriescache)
         for name in entries where regex.firstMatch(in: name, range: NSRange(name.startIndex..., in: name)) != nil {
+            guard isSafeVarCleanName(name) else { continue }
             let probepath = (basepath as NSString).appendingPathComponent(name)
+            guard isPath(probepath, under: basepath) else { continue }
             if seenpaths.insert(probepath).inserted {
                 out.append(probepath)
             }

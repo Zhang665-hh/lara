@@ -760,7 +760,7 @@ final class laramgr: ObservableObject {
     }
     
     func rcinitDaemon(serviceName: String, framework: String? = nil, process: String, migbypass: Bool = false, completion: ((RemoteCall?) -> Void)? = nil) {
-        guard dsready, let sbProc else {
+        guard dsready, rcready, let sbProc else {
             completion?(nil)
             return
         }
@@ -809,6 +809,7 @@ final class laramgr: ObservableObject {
             self?.sbProc?.destroy()
             
             DispatchQueue.main.async {
+                self?.sbProc = nil
                 self?.logmsg("remote call session destroyed")
                 completion?()
             }

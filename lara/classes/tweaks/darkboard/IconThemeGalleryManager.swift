@@ -140,7 +140,9 @@ final class IconThemeGalleryManager: ObservableObject {
             return serverBaseURL
         }
 
-        let commitURL = URL(string: "https://api.github.com/repos/leminlimez/Cowabunga-explore-repo/commits/main")!
+        guard let commitURL = URL(string: "https://api.github.com/repos/leminlimez/Cowabunga-explore-repo/commits/main") else {
+            throw NSError(domain: "IconThemeGallery", code: 3, userInfo: [NSLocalizedDescriptionKey: "Invalid gallery commits URL."])
+        }
         let (data, response) = try await session.data(from: commitURL)
         guard let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode == 200 else {
             throw NSError(domain: "IconThemeGallery", code: 4, userInfo: [NSLocalizedDescriptionKey: "Could not reach the Cowabunga gallery repository."])

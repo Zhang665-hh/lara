@@ -198,7 +198,7 @@ struct JitView: View {
 				}
 			}
 
-	        if mgr.rcrunning {
+	        if mgr.rcready {
 	            runenable()
 	        } else {
 	            mgr.rcinit(process: "SpringBoard", migbypass: false) { success in

@@ -263,6 +263,7 @@ struct DecryptView: View {
 
             try? fm.removeItem(atPath: workDir)
             try? fm.createDirectory(atPath: payloadDir, withIntermediateDirectories: true)
+            try? fm.createDirectory(atPath: destAppPath, withIntermediateDirectories: true)
 
             guard let enumerator = fm.enumerator(atPath: app.bundlePath) else {
                 DispatchQueue.main.async {
@@ -306,7 +307,9 @@ struct DecryptView: View {
                     let fwBinary = frameworksPath + "/" + fw + "/" + fwName
                     if !fm.fileExists(atPath: fwBinary) { continue }
                     if is_encrypted_path(fwBinary) > 0 {
-                        let fwRet = decrypt_binary_pid(fwBinary, pid, fwBinary)
+                        // Decrypt from the live in-memory mapping; destination is the IPA copy.
+                        let liveFwBinary = srcFrameworks + "/" + fw + "/" + fwName
+                        let fwRet = decrypt_binary_pid(liveFwBinary, pid, fwBinary)
                         if fwRet != 0 {
                             laramgr.shared.logmsg("(decrypt) framework \(fwName) decrypt failed")
                         }
