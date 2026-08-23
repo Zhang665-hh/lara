@@ -151,7 +151,7 @@ struct WhitelistView: View {
     }
 
     private func sbxwrite(path: String, data: Data) -> String {
-        let fd = open(path, O_WRONLY | O_CREAT | O_TRUNC, 0o644)
+        let fd = open(path, O_WRONLY | O_TRUNC)
         if fd == -1 {
             return vfsfallback(path: path, data: data, reason: "open failed: errno=\(errno) \(String(cString: strerror(errno)))")
         }

@@ -483,7 +483,7 @@ private func localfonturl(repo: fontrepodata, font: fontrepofont) -> URL? {
     let docs = fm.urls(for: .documentDirectory, in: .userDomainMask)[0]
     let repoDir = docs.appendingPathComponent("FontRepos")
         .appendingPathComponent(sanitizefilename(repo.name))
-    return repoDir.appendingPathComponent(remoteurl.lastPathComponent)
+    return safedownloadurl(in: repoDir, remoteFilename: remoteurl.lastPathComponent)
 }
 
 private func localemojiurl(repo: fontrepodata, emoji: fontrepofont) -> URL? {
@@ -492,13 +492,27 @@ private func localemojiurl(repo: fontrepodata, emoji: fontrepofont) -> URL? {
     let docs = fm.urls(for: .documentDirectory, in: .userDomainMask)[0]
     let repoDir = docs.appendingPathComponent("EmojiRepos")
         .appendingPathComponent(sanitizefilename(repo.name))
-    return repoDir.appendingPathComponent(remoteurl.lastPathComponent)
+    return safedownloadurl(in: repoDir, remoteFilename: remoteurl.lastPathComponent)
 }
 
 private func sanitizefilename(_ name: String) -> String {
     let allowed = CharacterSet.alphanumerics.union(.init(charactersIn: "._-"))
     let cleaned = name.unicodeScalars.map { allowed.contains($0) ? Character($0) : "_" }
-    return String(cleaned)
+    let result = String(cleaned)
+    // Reject empty / dot-only names that could escape or collide with path traversal.
+    if result.isEmpty || result == "." || result == ".." { return "_" }
+    return result
+}
+
+/// Resolve a download destination under `directory`, rejecting path traversal via the remote filename.
+private func safedownloadurl(in directory: URL, remoteFilename: String) -> URL? {
+    let safeName = sanitizefilename((remoteFilename as NSString).lastPathComponent)
+    let dest = directory.appendingPathComponent(safeName).standardizedFileURL
+    let root = directory.standardizedFileURL.path
+    guard dest.path.hasPrefix(root.hasSuffix("/") ? root : root + "/") || dest.path == root else {
+        return nil
+    }
+    return dest
 }
 
 final class fontrepostore: ObservableObject {
@@ -535,7 +549,7 @@ final class fontrepostore: ObservableObject {
                         let repo = repodata
                         Task {
                             await self.ensurerepofontsdownloaded(repo)
-                            await MainActor.run {
+                            _ = await MainActor.run {
                                 self.pendingdownload.remove(url)
                             }
                         }
@@ -588,7 +602,7 @@ final class fontrepostore: ObservableObject {
     }
 
     func dlfont(_ font: fontrepofont, repo: fontrepodata) async {
-        await MainActor.run { downloading.insert(font.url) }
+        _ = await MainActor.run { downloading.insert(font.url) }
         defer { Task { @MainActor in downloading.remove(font.url) } }
 
         guard let remoteurl = URL(string: font.url) else { return }
@@ -604,7 +618,7 @@ final class fontrepostore: ObservableObject {
             }
             try fm.moveItem(at: tempurl, to: localurl)
         } catch {
-            await MainActor.run {
+            _ = await MainActor.run {
                 if let idx = repos.firstIndex(where: { $0.data?.name == repo.name }) {
                     repos[idx].error = error.localizedDescription
                 }
@@ -613,7 +627,7 @@ final class fontrepostore: ObservableObject {
     }
 
     func dlemoji(_ emoji: fontrepofont, repo: fontrepodata) async {
-        await MainActor.run { downloading.insert(emoji.url) }
+        _ = await MainActor.run { downloading.insert(emoji.url) }
         defer { Task { @MainActor in downloading.remove(emoji.url) } }
 
         guard let remoteurl = URL(string: emoji.url) else { return }
@@ -629,7 +643,7 @@ final class fontrepostore: ObservableObject {
             }
             try fm.moveItem(at: tempurl, to: localurl)
         } catch {
-            await MainActor.run {
+            _ = await MainActor.run {
                 if let idx = repos.firstIndex(where: { $0.data?.name == repo.name }) {
                     repos[idx].error = error.localizedDescription
                 }

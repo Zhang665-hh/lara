@@ -58,7 +58,15 @@ extension Data {
 
 extension Data {
     func scan<T>(at offset: Int) -> T {
-        self.withUnsafeBytes { $0.loadUnaligned(fromByteOffset: offset, as: T.self) }
+        precondition(offset >= 0 && offset + MemoryLayout<T>.size <= count,
+                     "scan(at:) out of bounds")
+        return self.withUnsafeBytes { $0.loadUnaligned(fromByteOffset: offset, as: T.self) }
+    }
+
+    /// Bounds-checked scan; returns nil if the typed read would leave the buffer.
+    func scanIfValid<T>(at offset: Int) -> T? {
+        guard offset >= 0, offset + MemoryLayout<T>.size <= count else { return nil }
+        return self.withUnsafeBytes { $0.loadUnaligned(fromByteOffset: offset, as: T.self) }
     }
 }
 
@@ -117,6 +125,7 @@ public enum ZipError: Error {
     case corruptArchive(String)
     case unsupportedCompression
     case crcMismatch
+    case tooLarge(String)
 }
 
 public class ZipArchive {
@@ -125,6 +134,11 @@ public class ZipArchive {
     private var entryMap: [String: ZipEntry]
     private let mgr = laramgr.shared
     private var error = ""
+    /// Soft budget across all extracted entries in one archive session.
+    private var extractedTotal: UInt64 = 0
+    private static let maxUncompressedEntry: UInt64 = 64 * 1024 * 1024
+    private static let maxUncompressedArchive: UInt64 = 256 * 1024 * 1024
+    private static let maxEntryCount: Int = 10_000
 
     public init(data: Data) throws {
         self.data = data
@@ -140,12 +154,15 @@ public class ZipArchive {
     public subscript(path: String) -> ZipEntry? { entryMap[path] }
 
     public func extract(_ entry: ZipEntry) throws -> Data {
-        // Cap decompressed entry size to mitigate zip bombs during theme import.
-        let maxUncompressedEntry: UInt64 = 64 * 1024 * 1024
-        guard entry.uncompressedSize <= maxUncompressedEntry else {
+        guard entry.uncompressedSize <= Self.maxUncompressedEntry else {
             error = "(zip) entry too large (\(entry.uncompressedSize) bytes)"
             mgr.logmsg("\(error)")
-            throw ZipError.corruptArchive("\(error)")
+            throw ZipError.tooLarge("\(error)")
+        }
+        guard extractedTotal + entry.uncompressedSize <= Self.maxUncompressedArchive else {
+            error = "(zip) archive uncompressed budget exceeded"
+            mgr.logmsg("\(error)")
+            throw ZipError.tooLarge("\(error)")
         }
 
         let end = entry.dataOffset + entry.compressedSize
@@ -156,6 +173,7 @@ public class ZipArchive {
             throw ZipError.corruptArchive("\(error)")
         }
 
+        let result: Data
         switch entry.compressionMethod {
         case 0:
             let raw = data.subdata(in: Int(entry.dataOffset)..<Int(end))
@@ -164,7 +182,7 @@ public class ZipArchive {
                 mgr.logmsg("\(error)")
                 throw ZipError.crcMismatch
             }
-            return raw
+            result = raw
         case 8:
             let raw = data.subdata(in: Int(entry.dataOffset)..<Int(end))
             let decompressed = try decompressDeflate(raw, decompressedSize: Int(entry.uncompressedSize))
@@ -173,12 +191,15 @@ public class ZipArchive {
                 mgr.logmsg("\(error)")
                 throw ZipError.crcMismatch
             }
-            return decompressed
+            result = decompressed
         default:
             error = "(zip) unsupported compression, not a valid .zip"
             mgr.logmsg("\(error)")
             throw ZipError.unsupportedCompression
         }
+
+        extractedTotal += UInt64(result.count)
+        return result
     }
 
     private func scanEntries() throws {
@@ -206,6 +227,12 @@ public class ZipArchive {
             cdOffset = UInt64(cdOffset32)
             cdSize = UInt64(cdSize32)
             totalEntries = UInt64(totalEntries16)
+        }
+
+        guard totalEntries <= UInt64(Self.maxEntryCount) else {
+            error = "(zip) too many entries (\(totalEntries))"
+            mgr.logmsg("\(error)")
+            throw ZipError.tooLarge("\(error)")
         }
 
         guard cdOffset + cdSize <= UInt64(data.count) else {
@@ -236,6 +263,13 @@ public class ZipArchive {
             let extraLen: UInt16 = data.scan(at: pos + 30)
             let commentLen: UInt16 = data.scan(at: pos + 32)
             let lfhOffset32: UInt32 = data.scan(at: pos + 42)
+
+            let headerEnd = pos + 46 + Int(nameLen) + Int(extraLen) + Int(commentLen)
+            guard headerEnd <= data.count else {
+                error = "(zip) cd name/extra/comment out of bounds"
+                mgr.logmsg("\(error)")
+                throw ZipError.corruptArchive("\(error)")
+            }
 
             let nameData = data.subdata(in: pos + 46..<pos + 46 + Int(nameLen))
             let extraData = data.subdata(in: pos + 46 + Int(nameLen)..<pos + 46 + Int(nameLen) + Int(extraLen))
@@ -272,7 +306,7 @@ public class ZipArchive {
                 isDirectory: isDir
             ))
 
-            pos += 46 + Int(nameLen) + Int(extraLen) + Int(commentLen)
+            pos = headerEnd
         }
     }
 
@@ -291,7 +325,13 @@ public class ZipArchive {
         }
         let nameLen: UInt16 = data.scan(at: off + 26)
         let extraLen: UInt16 = data.scan(at: off + 28)
-        return lfhOffset + 30 + UInt64(nameLen) + UInt64(extraLen)
+        let headerEnd = off + 30 + Int(nameLen) + Int(extraLen)
+        guard headerEnd <= data.count else {
+            error = "(zip) lfh name/extra out of bounds"
+            mgr.logmsg("\(error)")
+            throw ZipError.corruptArchive("\(error)")
+        }
+        return UInt64(headerEnd)
     }
 
     private func decompressDeflate(_ compressed: Data, decompressedSize: Int) throws -> Data {
@@ -327,11 +367,19 @@ public class ZipArchive {
     }
 
     private func locateEOCD() throws -> (offset: Int, commentLen: Int) {
+        // EOCD is at least 22 bytes; commentLen lives at offset +20.
         let searchStart = max(0, data.count - 65557)
-        for i in (searchStart..<data.count - 3).reversed() {
+        let searchEnd = data.count - 22
+        guard searchEnd >= searchStart else {
+            error = "(zip) no eocd"
+            mgr.logmsg("\(error)")
+            throw ZipError.corruptArchive("\(error)")
+        }
+        for i in (searchStart...searchEnd).reversed() {
             let sig: UInt32 = data.scan(at: i)
             if sig == eocdSignature {
                 let commentLen: UInt16 = data.scan(at: i + 20)
+                guard i + 22 + Int(commentLen) <= data.count else { continue }
                 return (i, Int(commentLen))
             }
         }
@@ -450,7 +498,11 @@ public func createZipArchive(fromDirectory sourceURL: URL, to destinationURL: UR
     var cdEntries: [Data] = []
 
     for entry in fileEntries {
-        let nameData = entry.name.data(using: .utf8)!
+        guard let nameData = entry.name.data(using: .utf8) else {
+            error = "(zip) non-utf8 entry name: \(entry.name)"
+            mgr.logmsg("\(error)")
+            throw ZipError.corruptArchive("\(error)")
+        }
         let nameLen = UInt16(nameData.count)
         let offset = UInt32(try fh.offset())
 
@@ -495,7 +547,11 @@ public func createZipArchive(fromDirectory sourceURL: URL, to destinationURL: UR
     }
 
     for dirName in dirEntries {
-        let nameData = dirName.data(using: .utf8)!
+        guard let nameData = dirName.data(using: .utf8) else {
+            error = "(zip) non-utf8 directory name: \(dirName)"
+            mgr.logmsg("\(error)")
+            throw ZipError.corruptArchive("\(error)")
+        }
         let nameLen = UInt16(nameData.count)
         let offset = UInt32(try fh.offset())
 

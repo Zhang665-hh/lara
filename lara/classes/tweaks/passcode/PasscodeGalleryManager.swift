@@ -127,8 +127,18 @@ final class PasscodeGalleryManager: ObservableObject {
         downloading.insert(theme.id)
         defer { downloading.remove(theme.id) }
         let (data, _) = try await URLSession.shared.data(from: fileURL)
-        let dest = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent(theme.name + ".passthm")
+        let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+        let safeBase = theme.name
+            .replacingOccurrences(of: "/", with: "_")
+            .replacingOccurrences(of: "\\", with: "_")
+            .replacingOccurrences(of: "..", with: "_")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let fileName = (safeBase.isEmpty ? "theme" : safeBase) + ".passthm"
+        let dest = docs.appendingPathComponent(fileName).standardizedFileURL
+        let root = docs.standardizedFileURL.path
+        guard dest.path.hasPrefix(root.hasSuffix("/") ? root : root + "/") else {
+            throw URLError(.cannotWriteToFile)
+        }
         try data.write(to: dest, options: .atomic)
     }
 

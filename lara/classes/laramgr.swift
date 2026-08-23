@@ -92,7 +92,8 @@ final class laramgr: ObservableObject {
     @Published var showLogs: Bool = false
     
     var sbProc: RemoteCall?
-    var ytProc = RemoteCall(process: "youtube", useMigFilterBypass: false)
+    /// Lazily created; never eager-init at mgr construction (RemoteCall init can return nil / trap).
+    var ytProc: RemoteCall?
     
     static let shared = laramgr()
     static let fontpath = "/System/Library/Fonts/Core/SFUI.ttf"
@@ -365,7 +366,8 @@ final class laramgr: ObservableObject {
     
     private func sbxoverwrite(path: String, data: Data) -> (ok: Bool, message: String) {
         let immutableMessage = clearImmutableForOverwriteIfNeeded(path: path)
-        let fd = open(path, O_WRONLY | O_CREAT | O_TRUNC, 0o644)
+        // Overwrite existing targets only — do not create missing sensitive paths.
+        let fd = open(path, O_WRONLY | O_TRUNC)
         if fd == -1 {
             let prefix = immutableMessage.map { "\($0), " } ?? ""
             return (false, "\(prefix)sbx open failed: errno=\(errno) \(String(cString: strerror(errno)))")
@@ -676,8 +678,9 @@ final class laramgr: ObservableObject {
 
     @discardableResult
     func apfsown(path: String, uid: UInt32, gid: UInt32) -> Bool {
-        if !isapfs(path) {
-            print("\(path) is apfs!")
+        guard isapfs(path) else {
+            print("\(path) is not apfs; skipping apfs_own")
+            return false
         }
         
         let result = path.withCString { cPath in
@@ -691,6 +694,31 @@ final class laramgr: ObservableObject {
         
         print("changed owner of \(path) to \(uid):\(gid)!")
         return true
+    }
+
+    /// Create or return a RemoteCall attached to YouTube. Safe to call before exploit is ready (returns nil).
+    @discardableResult
+    func ensureYouTubeRemoteCall() -> RemoteCall? {
+        #if !DISABLE_REMOTECALL
+        if let existing = ytProc { return existing }
+        guard dsready else {
+            logmsg("(rc) youtube remote call requires darksword first")
+            return nil
+        }
+        let proc = RemoteCall(process: "youtube", useMigFilterBypass: false)
+        ytProc = proc
+        if proc == nil {
+            let error = RemoteCall.lastInitError()
+            if let error, !error.isEmpty {
+                logmsg("(rc) youtube remote call init failed: \(error)")
+            } else {
+                logmsg("(rc) youtube remote call init failed")
+            }
+        }
+        return proc
+        #else
+        return nil
+        #endif
     }
     
     #if !DISABLE_REMOTECALL
@@ -747,10 +775,12 @@ final class laramgr: ObservableObject {
             }
             
             let proc = RemoteCall(process: process, useMigFilterBypass: migbypass)
-            completion?(proc)
             
             DispatchQueue.main.async {
-                guard let self = self else { return }
+                guard let self = self else {
+                    completion?(nil)
+                    return
+                }
                 let success = proc != nil
                 if success {
                     self.logmsg("remote call initialized on \(process)")
@@ -764,6 +794,7 @@ final class laramgr: ObservableObject {
                     }
                     self.rcrunning = false
                 }
+                completion?(proc)
             }
         }
     }

@@ -560,7 +560,8 @@ struct CardView: View {
         let dir = card.dirpath
         let cachepath: String
         if dir.lowercased().hasSuffix(".pkpass") {
-            cachepath = dir.replacingOccurrences(of: "pkpass", with: "cache")
+            // Replace only the .pkpass path extension, not every "pkpass" substring.
+            cachepath = String(dir.dropLast(6)) + "cache"
         } else {
             cachepath = dir + ".cache"
         }

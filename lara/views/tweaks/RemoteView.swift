@@ -311,7 +311,11 @@ struct RemoteView: View {
             
             Section {
                 Button {
-                    youtube_tweak(mgr.ytProc)
+                    guard let proc = mgr.ensureYouTubeRemoteCall() else {
+                        mgr.logmsg("(rc) YouTube tweaks unavailable (process not attached)")
+                        return
+                    }
+                    youtube_tweak(proc)
                 } label: {
                     Text("Generic Youtube Tweaks")
                 }

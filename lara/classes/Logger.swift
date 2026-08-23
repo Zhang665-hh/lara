@@ -28,6 +28,8 @@ class Logger: ObservableObject {
     private var pendingdivider = false
     private var stdoutpipe: Pipe?
     private var panding = ""
+    private let captureQueue = DispatchQueue(label: "lara.logger.capture")
+    private let fileQueue = DispatchQueue(label: "lara.logger.file")
     private var ogstdout: Int32 = -1
     private var ogstderr: Int32 = -1
     private var logfileurl: URL?
@@ -213,7 +215,9 @@ class Logger: ObservableObject {
             let data = handle.availableData
             if data.isEmpty { return }
             guard let chunk = String(data: data, encoding: .utf8), !chunk.isEmpty else { return }
-            self?.appendraw(chunk)
+            self?.captureQueue.async {
+                self?.appendraw(chunk)
+            }
         }
     }
 
@@ -344,6 +348,7 @@ class Logger: ObservableObject {
     }
 
     private func appendtofile(_ lines: [String]) {
+        fileQueue.sync {
         guard let handle = logfilehandle else { return }
         let filtered = lines.filter { !shouldignore($0) }
         guard !filtered.isEmpty else { return }
@@ -352,5 +357,6 @@ class Logger: ObservableObject {
             try? handle.write(contentsOf: data)
             try? handle.synchronize()
         }
+            }
     }
 }

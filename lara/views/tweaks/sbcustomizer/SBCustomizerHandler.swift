@@ -72,12 +72,17 @@ class SpringboardColorManager {
     }
     
     static func getColor(forType: SpringboardType) -> Color {
-        let bgDir = getBackgroundDirectory()
-        if bgDir == nil || finalFiles[forType] == nil || fileExt[forType] == nil || !FileManager.default.fileExists(atPath: (bgDir!.appendingPathComponent("\(finalFiles[forType]![0])\(fileExt[forType]!)").path)) {
+        guard let bgDir = getBackgroundDirectory(),
+              let files = finalFiles[forType], let first = files.first,
+              let ext = fileExt[forType] else {
+            return Color.gray
+        }
+        let fileURL = bgDir.appendingPathComponent("\(first)\(ext)")
+        guard FileManager.default.fileExists(atPath: fileURL.path) else {
             return Color.gray
         }
         do {
-            let newData = try Data(contentsOf: bgDir!.appendingPathComponent("\(finalFiles[forType]![0])\(fileExt[forType]!)"))
+            let newData = try Data(contentsOf: fileURL)
             guard let plist = try PropertyListSerialization.propertyList(from: newData, options: [], format: nil) as? [String: Any] else {
                 throw "Invalid property list format"
             }
@@ -96,12 +101,17 @@ class SpringboardColorManager {
     }
     
     static func getBlur(forType: SpringboardType) -> Double {
-        let bgDir = getBackgroundDirectory()
-        if bgDir == nil || finalFiles[forType] == nil || !FileManager.default.fileExists(atPath: (bgDir!.appendingPathComponent("\(finalFiles[forType]![0])\(fileExt[forType]!)").path)) {
+        guard let bgDir = getBackgroundDirectory(),
+              let files = finalFiles[forType], let first = files.first,
+              let ext = fileExt[forType] else {
+            return 30
+        }
+        let fileURL = bgDir.appendingPathComponent("\(first)\(ext)")
+        guard FileManager.default.fileExists(atPath: fileURL.path) else {
             return 30
         }
         do {
-            let newData = try Data(contentsOf: bgDir!.appendingPathComponent("\(finalFiles[forType]![0])\(fileExt[forType]!)"))
+            let newData = try Data(contentsOf: fileURL)
             guard let plist = try PropertyListSerialization.propertyList(from: newData, options: [], format: nil) as? [String: Any] else {
                 throw "Invalid property list format"
             }
