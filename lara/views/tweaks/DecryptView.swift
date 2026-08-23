@@ -218,25 +218,22 @@ struct DecryptView: View {
             }
 
             DispatchQueue.global(qos: .userInitiated).asyncAfter(deadline: .now() + 2.5) {
-                launch_app(Bundle.main.bundleIdentifier!)
+                guard let selfId = Bundle.main.bundleIdentifier else { return }
+                launch_app(selfId)
                 usleep(500000)
 
-                if self.pendingdecrypt != nil {
-                    self.pendingdecrypt = nil
-                    let foundPid = find_process_pid(app.executable)
-                    if foundPid > 0 {
-                        DispatchQueue.main.async {
+                let foundPid = find_process_pid(app.executable)
+                DispatchQueue.main.async {
+                    // @State must only be mutated on the main queue.
+                    if self.pendingdecrypt != nil {
+                        self.pendingdecrypt = nil
+                        if foundPid > 0 {
                             self.doDecrypt(app, pid: foundPid)
-                        }
-                    } else {
-                        DispatchQueue.main.async {
+                        } else {
                             self.decryptingbid = nil
                             self.errormsg = "Process not found after launch. Try manually."
                         }
                     }
-                }
-
-                DispatchQueue.main.async {
                     UIApplication.shared.endBackgroundTask(bgTask)
                 }
             }
@@ -262,6 +259,7 @@ struct DecryptView: View {
 
             try? fm.removeItem(atPath: workDir)
             try? fm.createDirectory(atPath: payloadDir, withIntermediateDirectories: true)
+            try? fm.createDirectory(atPath: destAppPath, withIntermediateDirectories: true)
 
             guard let enumerator = fm.enumerator(atPath: app.bundlePath) else {
                 DispatchQueue.main.async {
@@ -278,9 +276,27 @@ struct DecryptView: View {
                 var isDir: ObjCBool = false
                 guard fm.fileExists(atPath: src, isDirectory: &isDir) else { continue }
                 if isDir.boolValue {
-                    try? fm.createDirectory(atPath: dst, withIntermediateDirectories: true)
+                    do {
+                        try fm.createDirectory(atPath: dst, withIntermediateDirectories: true)
+                    } catch {
+                        DispatchQueue.main.async {
+                            decryptingbid = nil
+                            errormsg = "Failed to create directory in decrypted copy"
+                            laramgr.shared.logmsg("(decrypt) mkdir failed: \(dst)")
+                        }
+                        return
+                    }
                 } else {
-                    try? fm.copyItem(atPath: src, toPath: dst)
+                    do {
+                        try fm.copyItem(atPath: src, toPath: dst)
+                    } catch {
+                        DispatchQueue.main.async {
+                            decryptingbid = nil
+                            errormsg = "Failed to copy file into decrypted payload"
+                            laramgr.shared.logmsg("(decrypt) copy failed: \(src)")
+                        }
+                        return
+                    }
                 }
             }
 
@@ -297,20 +313,45 @@ struct DecryptView: View {
 
             let srcFrameworks = app.bundlePath + "/Frameworks"
             var srcFwSt = stat()
+            var frameworkFailures: [String] = []
             if stat(srcFrameworks, &srcFwSt) == 0 {
                 let frameworksPath = destAppPath + "/Frameworks"
-                let frameworks = (try? fm.contentsOfDirectory(atPath: frameworksPath)) ?? []
+                // Fail closed: source has Frameworks but dest list/copy failed → refuse "successful" IPA.
+                guard let frameworks = try? fm.contentsOfDirectory(atPath: frameworksPath) else {
+                    DispatchQueue.main.async {
+                        decryptingbid = nil
+                        errormsg = "Failed to list Frameworks in decrypted copy"
+                        laramgr.shared.logmsg("(decrypt) Frameworks list failed after copy")
+                    }
+                    return
+                }
                 for fw in frameworks where fw.hasSuffix(".framework") {
                     let fwName = (fw as NSString).deletingPathExtension
                     let fwBinary = frameworksPath + "/" + fw + "/" + fwName
                     if !fm.fileExists(atPath: fwBinary) { continue }
-                    if is_encrypted_path(fwBinary) > 0 {
-                        let fwRet = decrypt_binary_pid(fwBinary, pid, fwBinary)
+                    let encState = is_encrypted_path(fwBinary)
+                    if encState < 0 {
+                        frameworkFailures.append(fwName)
+                        laramgr.shared.logmsg("(decrypt) framework \(fwName) encryption probe failed")
+                    } else if encState > 0 {
+                        // Decrypt from the live in-memory mapping; destination is the IPA copy.
+                        let liveFwBinary = srcFrameworks + "/" + fw + "/" + fwName
+                        let fwRet = decrypt_binary_pid(liveFwBinary, pid, fwBinary)
                         if fwRet != 0 {
+                            frameworkFailures.append(fwName)
                             laramgr.shared.logmsg("(decrypt) framework \(fwName) decrypt failed")
                         }
                     }
                 }
+            }
+
+            if !frameworkFailures.isEmpty {
+                DispatchQueue.main.async {
+                    decryptingbid = nil
+                    errormsg = "Failed to decrypt frameworks: \(frameworkFailures.joined(separator: ", "))"
+                    laramgr.shared.logmsg("(decrypt) aborting IPA share due to framework decrypt failures")
+                }
+                return
             }
 
             do {

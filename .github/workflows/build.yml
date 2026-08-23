@@ -10,7 +10,20 @@ permissions:
   contents: write
 
 jobs:
+  checks:
+    runs-on: ubuntu-latest
+    steps:
+      - name: checkout
+        uses: actions/checkout@v4
+      - name: static safety checks
+        run: |
+          python3 scripts/checks/check_no_malware.py
+          python3 scripts/checks/check_support_matrix.py
+          python3 scripts/checks/check_licenses.py
+          python3 scripts/checks/check_force_unwraps.py
+
   build:
+    needs: checks
     runs-on: macos-26
     env:
       FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
@@ -37,17 +50,24 @@ jobs:
           chmod +x scripts/build_ipa.sh
           ./scripts/build_ipa.sh
 
+      - name: upload build log (always)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: xcodebuild-log
+          path: build/xcodebuild.log
+          if-no-files-found: ignore
+
       - name: upload artifact (PR only)
         if: github.event_name == 'pull_request'
         uses: actions/upload-artifact@v4
         with:
           name: lara-ipa
-          path: |
-            build/lara.ipa
-            build/xcodebuild.log
+          path: build/lara.ipa
+          if-no-files-found: ignore
 
       - name: upload release ipa
-        if: github.event_name != 'pull_request'
+        if: github.event_name != 'pull_request' && success()
         uses: actions/upload-artifact@v4
         with:
           name: release-ipa

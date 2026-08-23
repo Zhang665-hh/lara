@@ -36,6 +36,17 @@ func isunsupported() -> Bool {
         return true
     }
     
+    // Match README support matrix: iOS 18.7.2+ is not supported.
+    if v.majorVersion == 18 {
+        if v.minorVersion > 7 { return true }
+        if v.minorVersion == 7 && v.patchVersion >= 2 { return true }
+    }
+    
+    // iOS 19–25 are outside the documented support window.
+    if v.majorVersion >= 19 && v.majorVersion <= 25 {
+        return true
+    }
+    
     if v.majorVersion > 26 {
         return true
     }

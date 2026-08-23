@@ -29,7 +29,10 @@ func toggleka() {
         return
     }
 
-    let fileurl = getwavurl()
+    guard let fileurl = getwavurl() else {
+        globallogger.log("(ka) documents directory unavailable")
+        return
+    }
     
     if !FileManager.default.fileExists(atPath: fileurl.path) {
         makesilentwav(at: fileurl)
@@ -48,8 +51,10 @@ func toggleka() {
     }
 }
 
-private func getwavurl() -> URL {
-    let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+private func getwavurl() -> URL? {
+    guard let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first else {
+        return nil
+    }
     return docs.appendingPathComponent("silent.wav")
 }
 
@@ -67,14 +72,14 @@ private func makesilentwav(at url: URL) {
     
     func append<T>(_ value: T) {
         var v = value
-        wavdata.append(Data(bytes: &v, count: MemoryLayout<T>.size))
+        withUnsafeBytes(of: &v) { wavdata.append(contentsOf: $0) }
     }
     
-    wavdata.append("RIFF".data(using: .ascii)!)
+    wavdata.append(Data("RIFF".utf8))
     append(UInt32(chunksize))
-    wavdata.append("WAVE".data(using: .ascii)!)
+    wavdata.append(Data("WAVE".utf8))
     
-    wavdata.append("fmt ".data(using: .ascii)!)
+    wavdata.append(Data("fmt ".utf8))
     append(UInt32(16))
     append(UInt16(1))
     append(UInt16(1))
@@ -83,7 +88,7 @@ private func makesilentwav(at url: URL) {
     append(blockalign)
     append(UInt16(16))
     
-    wavdata.append("data".data(using: .ascii)!)
+    wavdata.append(Data("data".utf8))
     append(UInt32(datasize))
     
     wavdata.append(Data(count: datasize))

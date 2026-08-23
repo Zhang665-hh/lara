@@ -46,19 +46,52 @@ enum SantanderChown {
 }
 
 enum santanderfs {
-    static func clearImmutableIfPossible(atPath path: String) {
+    /// Snapshot of UF_IMMUTABLE/APPEND cleared for an FM mutation; restore even on failure.
+    struct ClearedImmutable {
+        let path: String
+        let restore: [FileAttributeKey: Any]
+    }
+
+    @discardableResult
+    static func clearImmutableIfPossible(atPath path: String) -> ClearedImmutable? {
         guard ProcessInfo.processInfo.operatingSystemVersion.majorVersion == 16 else {
-            return
+            return nil
         }
+        guard let attrs = try? FileManager.default.attributesOfItem(atPath: path) else {
+            return nil
+        }
+        var updates: [FileAttributeKey: Any] = [:]
+        var restore: [FileAttributeKey: Any] = [:]
+        if (attrs[.immutable] as? NSNumber)?.boolValue == true {
+            updates[.immutable] = false
+            restore[.immutable] = true
+        }
+        if (attrs[.appendOnly] as? NSNumber)?.boolValue == true {
+            updates[.appendOnly] = false
+            restore[.appendOnly] = true
+        }
+        guard !updates.isEmpty else { return nil }
         do {
-            try FileManager.default.setAttributes([.immutable: false], ofItemAtPath: path)
+            try FileManager.default.setAttributes(updates, ofItemAtPath: path)
+            return ClearedImmutable(path: path, restore: restore)
         } catch {
             // Some files do not expose the immutable flag to this process; keep the original operation error.
+            return nil
+        }
+    }
+
+    static func restoreImmutableIfNeeded(_ cleared: ClearedImmutable?) {
+        guard let cleared, !cleared.restore.isEmpty else { return }
+        do {
+            try FileManager.default.setAttributes(cleared.restore, ofItemAtPath: cleared.path)
+        } catch {
+            print("(fm) restore immutable failed for \(cleared.path): \(error.localizedDescription)")
         }
     }
 
     static func removeItemClearingImmutable(atPath path: String) throws {
-        clearImmutableIfPossible(atPath: path)
+        let cleared = clearImmutableIfPossible(atPath: path)
+        defer { restoreImmutableIfNeeded(cleared) }
         try FileManager.default.removeItem(atPath: path)
     }
 
@@ -77,8 +110,10 @@ enum santanderfs {
             return santanderlisting(items: [], empty: "Unable to list directory.")
         }
 
-        let items = entries.map { entry in
-            let full = item.path == "/" ? "/" + entry.name : item.path + "/" + entry.name
+        let items = entries.compactMap { entry -> santanderitem? in
+            let name = entry.name
+            guard !name.isEmpty, name != ".", name != "..", !name.contains("/") else { return nil }
+            let full = item.path == "/" ? "/" + name : item.path + "/" + name
             return santanderitem(path: full, isdir: entry.isDir)
         }
 
@@ -289,7 +324,22 @@ enum santanderfs {
             return santanderloadedfile(preview: .media(url), text: "", editable: false)
         }
 
-        guard let data = readdata(path: item.path, readsbx: readsbx, max: 2 * 1024 * 1024) else {
+        let maxText = 2 * 1024 * 1024
+        // Refuse editing truncated reads — SBX atomic save would drop the unread tail.
+        if readsbx {
+            if let size = sbxfilesize(path: item.path), size > Int64(maxText) {
+                let err = "File is too large to edit safely (\(size) bytes). Open with an external editor or raise the read cap."
+                return santanderloadedfile(preview: .error(err), text: err, editable: false)
+            }
+        } else {
+            let size = vfs_filesize(item.path)
+            if size > Int64(maxText) {
+                let err = "File is too large to edit safely (\(size) bytes) via VFS."
+                return santanderloadedfile(preview: .error(err), text: err, editable: false)
+            }
+        }
+
+        guard let data = readdata(path: item.path, readsbx: readsbx, max: maxText) else {
             let err = readsbx ? "Failed to read file.\n\n" + unreadabledetails(path: item.path) : "Failed to read file."
             return santanderloadedfile(preview: .error(err), text: err, editable: false)
         }
@@ -299,17 +349,11 @@ enum santanderfs {
     }
 
     static func writefile(path: String, data: Data, readsbx: Bool, writevfs: Bool) -> Bool {
-        if writevfs {
-            return laramgr.shared.vfsoverwritewithdata(target: path, data: data)
-        }
-        guard readsbx else { return false }
-        do {
-            clearImmutableIfPossible(atPath: path)
-            try data.write(to: URL(fileURLWithPath: path), options: .atomic)
-            return true
-        } catch {
-            return false
-        }
+        guard !data.isEmpty else { return false }
+        guard writevfs || readsbx else { return false }
+        // Shared overwrite gate: file-op lock, empty refuse, iOS16 immutable restore,
+        // SBX rename (size-changing) then same-size VFS — never a raw Data.write race.
+        return laramgr.shared.lara_overwritefile(target: path, data: data).ok
     }
 
     static func readdata(path: String, readsbx: Bool, max: Int) -> Data? {

@@ -131,21 +131,23 @@ struct ContentView: View {
                         }
                     }) {
                         Button("Initialize System", action: {
-                            mgr.vfsinit()
-                            mgr.sbxescape()
+                            mgr.vfsinit { vfsOK in
+                                guard vfsOK else { return }
+                                mgr.sbxescape()
+                            }
                         })
                         .disabled(!mgr.hasOffsets || !mgr.dsready || mgr.vfsrunning || mgr.sbxrunning || (mgr.vfsready && mgr.sbxready))
                     }
                 }
                 
-                // initalize vfs
+                // initialize vfs
                 if selectedmethod == .vfs {
                     LabeledContent(content: {
                         if mgr.vfsready {
                             Image(systemName: "checkmark.circle")
                         } else if mgr.vfsrunning {
                             HStack {
-                                Text("\(Int(mgr.dsprogress * 100))%")
+                                Text("\(Int(mgr.vfsprogress * 100))%")
                                 ProgressView()
                             }
                         } else if mgr.vfsattempted && mgr.vfsfailed {
@@ -206,7 +208,7 @@ struct ContentView: View {
                         Image(systemName: "xmark.circle")
                     }
                 }) {
-                    Button("Initalize RemoteCall", action: {
+                    Button("Initialize RemoteCall", action: {
                         mgr.rcinit(process: "SpringBoard", migbypass: false) { success in
                             if success {
                                 mgr.logmsg("rc init succeeded!")
@@ -263,8 +265,13 @@ struct ContentView: View {
                 mgr.respring()
             })
             
-            Button("Panic!", action: {
-                mgr.panic()
+            Button("Panic!", role: .destructive, action: {
+                Alertinator.shared.alert(
+                    title: "Kernel Panic?",
+                    body: "This will intentionally panic the kernel and reboot the device.",
+                    actionLabel: "Panic",
+                    action: { mgr.panic() }
+                )
             })
             
             if isdebugged() {

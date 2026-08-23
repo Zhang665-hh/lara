@@ -44,13 +44,10 @@ func fetchkcache() -> Bool {
 
     let fakeread = "/private/preboot/Cryptexes/OS/System/Library/CoreServices/RestoreVersion.plist"
 
-    unlink(outpath)
-
-    var ogvn: UInt64 = 0
-    var ogvd: UInt64 = 0
+    var redirectState = vn_redirect_state_t(orig_vnode: 0, orig_v_data: 0, to_fd: -1, from_fd: -1)
 
     let redirect = kcpath.withCString { kcCString in
-        vn_fileredirect(fakeread, kcCString, &ogvn, &ogvd)
+        vn_fileredirect(fakeread, kcCString, &redirectState)
     }
     if !redirect {
         globallogger.log("(fetchkcache) failed to redirect vnode")
@@ -59,35 +56,44 @@ func fetchkcache() -> Bool {
 
     let src = open(fakeread, O_RDONLY)
     if src < 0 {
-        vn_fileunredirect(ogvn, ogvd)
+        vn_fileunredirect(&redirectState)
         return false
     }
 
-    let dst = open(outpath, O_WRONLY | O_CREAT | O_TRUNC, 0o644)
+    // Unique sibling temp + O_EXCL — never unlink/open the live Documents path (TOCTOU).
+    let tmpPath = outpath + ".lara.\(arc4random()).tmp"
+    let dst = open(tmpPath, O_WRONLY | O_CREAT | O_TRUNC | O_EXCL, 0o644)
     if dst < 0 {
         close(src)
-        vn_fileunredirect(ogvn, ogvd)
+        vn_fileunredirect(&redirectState)
         return false
     }
 
+    var published = false
     defer {
         close(src)
         close(dst)
-        vn_fileunredirect(ogvn, ogvd)
+        vn_fileunredirect(&redirectState)
+        if !published {
+            unlink(tmpPath)
+        }
     }
 
     var buffer = [UInt8](repeating: 0, count: 0x4000)
     let bufferSize = buffer.count
     var totalBytes = 0
+    var copyFailed = false
 
     while true {
-        let n = buffer.withUnsafeMutableBytes { rawBuffer in
-            read(src, rawBuffer.baseAddress!, bufferSize)
+        let n = buffer.withUnsafeMutableBytes { rawBuffer -> Int in
+            guard let base = rawBuffer.baseAddress else { return -1 }
+            return read(src, base, bufferSize)
         }
 
         if n < 0 {
             globallogger.log("(fetchkcache) failed to read kernelcache")
-            return false
+            copyFailed = true
+            break
         }
 
         if n == 0 {
@@ -96,39 +102,50 @@ func fetchkcache() -> Bool {
 
         var written = 0
         while written < n {
-            let w = buffer.withUnsafeBytes { rawBuffer in
-                write(dst, rawBuffer.baseAddress!.advanced(by: written), n - written)
+            let w = buffer.withUnsafeBytes { rawBuffer -> Int in
+                guard let base = rawBuffer.baseAddress else { return -1 }
+                return write(dst, base.advanced(by: written), n - written)
             }
 
             if w <= 0 {
                 globallogger.log("(fetchkcache) failed to write kernelcache")
-                return false
+                copyFailed = true
+                break
             }
 
             written += w
         }
+        if copyFailed { break }
 
         totalBytes += n
     }
 
-    if !FileManager.default.fileExists(atPath: outpath) || totalBytes == 0 {
-        globallogger.log("(fetchkcache) kernelcache output missing")
+    if copyFailed || totalBytes == 0 {
+        globallogger.log("(fetchkcache) kernelcache output incomplete — removed truncated file")
+        return false
+    }
+    if fsync(dst) != 0 {
+        globallogger.log("(fetchkcache) fsync failed")
         return false
     }
 
-    guard let handle = FileHandle(forReadingAtPath: outpath) else {
-        globallogger.log("(fetchkcache) kernelcache output missing")
+    // Validate magic on the temp before publishing.
+    guard let handle = FileHandle(forReadingAtPath: tmpPath) else {
+        globallogger.log("(fetchkcache) kernelcache temp missing")
         return false
     }
-
     let magic = handle.readData(ofLength: 2)
     handle.closeFile()
-
     guard magic.count == 2, magic[magic.startIndex] == 0x30, magic[magic.index(after: magic.startIndex)] == 0x84 else {
-        unlink(outpath)
         globallogger.log("(fetchkcache) invalid kernelcache output")
         return false
     }
+
+    if rename(tmpPath, outpath) != 0 {
+        globallogger.log("(fetchkcache) rename to final path failed")
+        return false
+    }
+    published = true
 
     globallogger.log("(fetchkcache) kernelcache fetch success!")
     return true

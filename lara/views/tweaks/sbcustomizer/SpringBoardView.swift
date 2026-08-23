@@ -117,8 +117,9 @@ struct SpringBoardView: View {
                                             .labelsHidden()
                                             .frame(width: 40)
                                             .onChange(of: option.color) { newcolor in
+                                                guard let sbType = option.sbType else { return }
                                                 do {
-                                                    try SpringboardColorManager.createColor(forType: option.sbType!, color: CIColor(color: UIColor(newcolor)), blur: Int(option.blur), asTemp: false)
+                                                    try SpringboardColorManager.createColor(forType: sbType, color: CIColor(color: UIColor(newcolor)), blur: Int(option.blur), asTemp: false)
                                                     print("Success")
                                                 } catch {
                                                     print(error.localizedDescription)
@@ -134,8 +135,9 @@ struct SpringBoardView: View {
                                         .foregroundColor(.secondary)
                                 }
                                 Slider(value: $option.blur, in: 0...150, step: 1.0, onEditingChanged: { _ in
+                                    guard let sbType = option.sbType else { return }
                                     do {
-                                        try SpringboardColorManager.createColor(forType: option.sbType!, color: CIColor(color: UIColor(option.color)), blur: Int(option.blur), asTemp: false)
+                                        try SpringboardColorManager.createColor(forType: sbType, color: CIColor(color: UIColor(option.color)), blur: Int(option.blur), asTemp: false)
                                         print("Success")
                                     } catch {
                                         print(error.localizedDescription)
@@ -157,11 +159,9 @@ struct SpringBoardView: View {
         for (i, option) in tweakOptions.enumerated() {
             tweakOptions[i].value = getDefaultStr(forKey: option.key)
             tweakOptions[i].selectedOption = tweakOptions[i].value
-            if option.sbType != nil {
-                if option.value == "Color" {
-                    tweakOptions[i].color = SpringboardColorManager.getColor(forType: option.sbType!)
-                    tweakOptions[i].blur = SpringboardColorManager.getBlur(forType: option.sbType!)
-                }
+            if let sbType = option.sbType, option.value == "Color" {
+                tweakOptions[i].color = SpringboardColorManager.getColor(forType: sbType)
+                tweakOptions[i].blur = SpringboardColorManager.getBlur(forType: sbType)
             }
         }
     }
@@ -169,7 +169,7 @@ struct SpringBoardView: View {
     func apply(_ sbType: SpringboardColorManager.SpringboardType, _ color: Color, _ blur: Int, save: Bool = true) -> Bool {
         do {
             try SpringboardColorManager.createColor(forType: sbType, color: CIColor(color: UIColor(color)), blur: blur, asTemp: !save)
-            SpringboardColorManager.applyColor(forType: sbType, asTemp: !save)
+            try SpringboardColorManager.applyColor(forType: sbType, asTemp: !save)
             if !save {
                 try SpringboardColorManager.deteleColor(forType: sbType)
             }
@@ -188,8 +188,8 @@ struct SpringBoardView: View {
             if option.value == "Disabled" {
                 print("Applying tweak \"" + option.title + "\"")
                 var succeeded = false
-                if option.sbType != nil {
-                    succeeded = apply(option.sbType!, .gray.opacity(0), 0)
+                if let sbType = option.sbType {
+                    succeeded = apply(sbType, .gray.opacity(0), 0)
                 } else {
                     succeeded = overwriteFile(typeOfFile: option.fileType, fileIdentifier: option.key, true)
                 }
@@ -198,25 +198,30 @@ struct SpringBoardView: View {
                 } else {
                     print("Failed to apply tweak \"" + option.title + "\"!!!")
                     failed = true
+                    break
                 }
                 
             } else if option.value == "Visible" {
                 print("Applying tweak \"" + option.title + "\"")
-                if option.sbType != nil {
-                    if option.sbType! == .switcher {
-                        let succeeded = apply(option.sbType!, .gray.opacity(1), 20, save: false)
+                if let sbType = option.sbType {
+                    if sbType == .switcher {
+                        let succeeded = apply(sbType, .gray.opacity(1), 20, save: false)
                         if succeeded {
                             print("Successfully applied tweak \"" + option.title + "\"")
                         } else {
                             print("Failed to apply tweak \"" + option.title + "\"!!!")
+                            failed = true
+                            break
                         }
                     } else {
                         do {
-                            try SpringboardColorManager.revertFiles(forType: option.sbType!)
+                            try SpringboardColorManager.revertFiles(forType: sbType)
                             print("Successfully applied tweak \"" + option.title + "\"")
                         } catch {
                             print("Failed to apply tweak \"" + option.title + "\"!!!")
                             print(error.localizedDescription)
+                            failed = true
+                            break
                         }
                     }
                 } else {
@@ -225,27 +230,31 @@ struct SpringBoardView: View {
                         print("Successfully applied tweak \"" + option.title + "\"")
                     } else {
                         print("Failed to apply tweak \"" + option.title + "\"!!!")
+                        failed = true
+                        break
                     }
                 }
                 
             } else if option.value == "Color" || option.value == "Blur" {
-                if option.sbType != nil {
+                if let sbType = option.sbType {
                     print("Applying tweak \"" + option.title + "\"")
-                    let succeeded = apply(option.sbType!, option.color, Int(option.blur))
+                    let succeeded = apply(sbType, option.color, Int(option.blur))
                     if succeeded {
                         print("Successfully applied tweak \"" + option.title + "\"")
                     } else {
                         print("Failed to apply tweak \"" + option.title + "\"!!!")
                         failed = true
+                        break
                     }
                 } else {
                     print("\(option.title) does not have a springboard type!")
                     failed = true
+                    break
                 }
             }
         }
         if failed {
-            Alertinator.shared.alert(title: "useless ass alert", body: "something failed while applying tweaks")
+            Alertinator.shared.alert(title: "Apply stopped", body: "A tweak failed; remaining options were not applied to avoid mixed SpringBoard state.")
         } else {
             Alertinator.shared.alert(title: "Success!", body: "Respring to see changes.", actionLabel: "Respring", action: { mgr.respring() })
         }
@@ -261,37 +270,70 @@ struct SpringBoardView: View {
                 var succeeded = true
                 for path in replacementPaths[fileIdentifier]! {
                     if fileIdentifier == "HomeBar" && value as? Bool == false {
-                        if let url: URL = Bundle.main.url(forResource: "HomeBarAssets", withExtension: "car") {
-                            do {
-                                let replacementCar = try Data(contentsOf: url)
-                                //try MDC.overwriteFile(at: "/System/Library/PrivateFrameworks/" + path, with: replacementCar)
-                            } catch {
-                                print(error.localizedDescription)
-                                succeeded = false
-                            }
+                        // Prefer the pre-hide backup; bundle HomeBarAssets.car is optional fallback.
+                        let backupDir = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+                            .appendingPathComponent("lara_sb_backups", isDirectory: true)
+                        let backupURL = backupDir.appendingPathComponent((path as NSString).lastPathComponent)
+                        let target = "/System/Library/PrivateFrameworks/" + path
+                        let restoreData: Data?
+                        if FileManager.default.fileExists(atPath: backupURL.path) {
+                            restoreData = try? Data(contentsOf: backupURL)
+                        } else if let url = Bundle.main.url(forResource: "HomeBarAssets", withExtension: "car") {
+                            restoreData = try? Data(contentsOf: url)
                         } else {
-                            print("Home bar file not found!")
-                            return false
+                            restoreData = nil
+                        }
+                        guard let car = restoreData, !car.isEmpty else {
+                            print("HomeBar restore data missing for \(target)")
+                            succeeded = false
+                            continue
+                        }
+                        let result = laramgr.shared.lara_overwritefile(target: target, data: car)
+                        if !result.ok {
+                            print("HomeBar restore failed: \(result.message)")
+                            succeeded = false
                         }
                     } else {
+                        let target = "/System/Library/PrivateFrameworks/" + path
+                        // Backup once before destroying assets with ### — VFS refuses
+                        // size changes, but SBX rename can permanently trash .car files.
+                        // Direct Data(contentsOf:) usually fails under sandbox; use VFS/SBX.
+                        let backupDir = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+                            .appendingPathComponent("lara_sb_backups", isDirectory: true)
+                        try? FileManager.default.createDirectory(at: backupDir, withIntermediateDirectories: true)
+                        let backupURL = backupDir.appendingPathComponent((path as NSString).lastPathComponent)
+                        if !FileManager.default.fileExists(atPath: backupURL.path) {
+                            let original = laramgr.shared.vfsread(path: target, maxSize: 32 * 1024 * 1024)
+                                ?? (try? Data(contentsOf: URL(fileURLWithPath: target)))
+                            guard let original, !original.isEmpty,
+                                  (try? original.write(to: backupURL, options: .atomic)) != nil else {
+                                print("sb backup failed for \(target) — refusing ### overwrite")
+                                succeeded = false
+                                continue
+                            }
+                        }
+
                         let randomGarbage = Data("###".utf8)
-                        
-                        let result = laramgr.shared.lara_overwritefile(target: "/System/Library/PrivateFrameworks/" + path, data: randomGarbage)
+                        let result = laramgr.shared.lara_overwritefile(target: target, data: randomGarbage)
                         
                         if result.ok {
                             print("i hope it worked")
                         } else {
-                            print("it didn't")
+                            print("it didn't: \(result.message)")
+                            succeeded = false
                         }
-                        
-                        return true
                     }
                 }
                 return succeeded
             }
+            // Unknown SpringBoard key — fail closed so UI cannot claim success for a no-op.
+            print("overwriteFile: unknown springboard key \(fileIdentifier)")
+            return false
         }
         
-        return true
+        // Unknown file type — fail closed.
+        print("overwriteFile: unsupported typeOfFile")
+        return false
     }
 }
 

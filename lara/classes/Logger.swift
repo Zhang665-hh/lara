@@ -20,6 +20,7 @@ let globallogger = Logger()
 
 class Logger: ObservableObject {
     @Published var logs: [String] = []
+    private let maxLogs = 2000
 
     private var lastmessage: String?
     private var repeatCount = 0
@@ -27,6 +28,8 @@ class Logger: ObservableObject {
     private var pendingdivider = false
     private var stdoutpipe: Pipe?
     private var panding = ""
+    private let captureQueue = DispatchQueue(label: "lara.logger.capture")
+    private let fileQueue = DispatchQueue(label: "lara.logger.file")
     private var ogstdout: Int32 = -1
     private var ogstderr: Int32 = -1
     private var logfileurl: URL?
@@ -130,6 +133,7 @@ class Logger: ObservableObject {
             }
 
             self.lastwasdivider = false
+            self.trimLogsIfNeeded()
         }
 
         appendtofile([message])
@@ -211,7 +215,9 @@ class Logger: ObservableObject {
             let data = handle.availableData
             if data.isEmpty { return }
             guard let chunk = String(data: data, encoding: .utf8), !chunk.isEmpty else { return }
-            self?.appendraw(chunk)
+            self?.captureQueue.async {
+                self?.appendraw(chunk)
+            }
         }
     }
 
@@ -242,18 +248,26 @@ class Logger: ObservableObject {
     }
 
     private func appendraw(_ chunk: String) {
-        var text = panding + chunk
+        let text = panding + chunk
         var lines = text.components(separatedBy: "\n")
         panding = lines.removeLast()
         if !lines.isEmpty {
             let filtered = lines.filter { !shouldignore($0) }
             DispatchQueue.main.async {
                 self.logs.append(contentsOf: filtered)
+                self.trimLogsIfNeeded()
             }
             appendtofile(filtered)
             for line in filtered {
                 emit(line)
             }
+        }
+    }
+
+
+    private func trimLogsIfNeeded() {
+        if logs.count > maxLogs {
+            logs.removeFirst(logs.count - maxLogs)
         }
     }
 
@@ -307,7 +321,7 @@ class Logger: ObservableObject {
         ])
         
         logfilehandle = try? FileHandle(forWritingTo: url)
-        try? logfilehandle?.seekToEnd()
+        _ = try? logfilehandle?.seekToEnd()
         
         let formatter = DateFormatter()
         formatter.dateFormat = "yyyy-MM-dd HH:mm:ss"
@@ -330,10 +344,11 @@ class Logger: ObservableObject {
             ])
         }
         logfilehandle = try? FileHandle(forWritingTo: url)
-        try? logfilehandle?.seekToEnd()
+        _ = try? logfilehandle?.seekToEnd()
     }
 
     private func appendtofile(_ lines: [String]) {
+        fileQueue.sync {
         guard let handle = logfilehandle else { return }
         let filtered = lines.filter { !shouldignore($0) }
         guard !filtered.isEmpty else { return }
@@ -342,5 +357,6 @@ class Logger: ObservableObject {
             try? handle.write(contentsOf: data)
             try? handle.synchronize()
         }
+            }
     }
 }

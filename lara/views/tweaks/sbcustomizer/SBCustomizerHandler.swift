@@ -72,13 +72,20 @@ class SpringboardColorManager {
     }
     
     static func getColor(forType: SpringboardType) -> Color {
-        let bgDir = getBackgroundDirectory()
-        if bgDir == nil || finalFiles[forType] == nil || fileExt[forType] == nil || !FileManager.default.fileExists(atPath: (bgDir!.appendingPathComponent("\(finalFiles[forType]![0])\(fileExt[forType]!)").path)) {
+        guard let bgDir = getBackgroundDirectory(),
+              let files = finalFiles[forType], let first = files.first,
+              let ext = fileExt[forType] else {
+            return Color.gray
+        }
+        let fileURL = bgDir.appendingPathComponent("\(first)\(ext)")
+        guard FileManager.default.fileExists(atPath: fileURL.path) else {
             return Color.gray
         }
         do {
-            let newData = try Data(contentsOf: bgDir!.appendingPathComponent("\(finalFiles[forType]![0])\(fileExt[forType]!)"))
-            let plist = try PropertyListSerialization.propertyList(from: newData, options: [], format: nil) as! [String: Any]
+            let newData = try Data(contentsOf: fileURL)
+            guard let plist = try PropertyListSerialization.propertyList(from: newData, options: [], format: nil) as? [String: Any] else {
+                throw "Invalid property list format"
+            }
             // get the colors
             let r = getDictValue(plist, "red") as? Double ?? CIColor.gray.red
             let g = getDictValue(plist, "green") as? Double ?? CIColor.gray.green
@@ -94,13 +101,20 @@ class SpringboardColorManager {
     }
     
     static func getBlur(forType: SpringboardType) -> Double {
-        let bgDir = getBackgroundDirectory()
-        if bgDir == nil || finalFiles[forType] == nil || !FileManager.default.fileExists(atPath: (bgDir!.appendingPathComponent("\(finalFiles[forType]![0])\(fileExt[forType]!)").path)) {
+        guard let bgDir = getBackgroundDirectory(),
+              let files = finalFiles[forType], let first = files.first,
+              let ext = fileExt[forType] else {
+            return 30
+        }
+        let fileURL = bgDir.appendingPathComponent("\(first)\(ext)")
+        guard FileManager.default.fileExists(atPath: fileURL.path) else {
             return 30
         }
         do {
-            let newData = try Data(contentsOf: bgDir!.appendingPathComponent("\(finalFiles[forType]![0])\(fileExt[forType]!)"))
-            let plist = try PropertyListSerialization.propertyList(from: newData, options: [], format: nil) as! [String: Any]
+            let newData = try Data(contentsOf: fileURL)
+            guard let plist = try PropertyListSerialization.propertyList(from: newData, options: [], format: nil) as? [String: Any] else {
+                throw "Invalid property list format"
+            }
             // get the blur
             return getDictValue(plist, "blurRadius") as? Double ?? 30
         } catch {
@@ -109,25 +123,76 @@ class SpringboardColorManager {
         return 30
     }
     
-    static func revertFiles(forType: SpringboardType) throws {
-        if finalFiles[forType] != nil && fileFolders[forType] != nil && fileExt[forType] != nil {
-            for file in finalFiles[forType]! {
-                if let url: URL = Bundle.main.url(forResource: file, withExtension: fileExt[forType]!) {
-                    let replacementFile = try Data(contentsOf: url)
-                    
-                    let result = laramgr.shared.lara_overwritefile(target: "\(fileFolders[forType]!)\(file)\(fileExt[forType]!)", data: replacementFile)
-                    
-                    if result.ok {
-                        throw "successfully reverted files"
-                    } else {
-                        throw "failed to overwrite with replacement file!"
-                    }
-                } else {
-                    throw "No file resource was found!"
-                }
+    /// Isolated staging dir for preview temps — avoid fixed top-level temp names that race across applies.
+    private static func stagingDirectoryURL(forType: SpringboardType) -> URL {
+        FileManager.default.temporaryDirectory
+            .appendingPathComponent("lara.sb.\(String(describing: forType))", isDirectory: true)
+    }
+
+    /// Wipe + recreate private temp staging for a new `createColor` pass.
+    private static func prepareStagingDirectory(forType: SpringboardType, asTemp: Bool) throws -> URL {
+        if !asTemp {
+            guard let bgDir = getBackgroundDirectory() else {
+                throw "Could not find the background files directory!"
             }
-        } else {
+            return bgDir
+        }
+        let dir = stagingDirectoryURL(forType: forType)
+        try? FileManager.default.removeItem(at: dir)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        return dir
+    }
+
+    /// Resolve existing stage location for `applyColor` — must not delete staged files.
+    private static func resolveStagingDirectory(forType: SpringboardType, asTemp: Bool) throws -> URL {
+        if !asTemp {
+            guard let bgDir = getBackgroundDirectory() else {
+                throw "Could not find the background files directory!"
+            }
+            return bgDir
+        }
+        let dir = stagingDirectoryURL(forType: forType)
+        var isDir: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: dir.path, isDirectory: &isDir), isDir.boolValue else {
+            throw "Missing staging directory for \(forType) — createColor must run first"
+        }
+        return dir
+    }
+
+    static func revertFiles(forType: SpringboardType) throws {
+        guard let files = finalFiles[forType],
+              let folder = fileFolders[forType],
+              let ext = fileExt[forType] else {
             throw "File type doesn't exist in table???"
+        }
+        // Stage all stock replacements + backups first; refuse partial Visible-revert.
+        var staged: [(target: String, data: Data, backup: Data)] = []
+        for file in files {
+            guard let url = Bundle.main.url(forResource: file, withExtension: ext) else {
+                throw "No file resource was found!"
+            }
+            let replacementFile = try Data(contentsOf: url)
+            let target = "\(folder)\(file)\(ext)"
+            let backup = try Data(contentsOf: URL(fileURLWithPath: target))
+            guard !backup.isEmpty, !replacementFile.isEmpty else {
+                throw "refusing empty stock/target for \(file)\(ext)"
+            }
+            staged.append((target, replacementFile, backup))
+        }
+        var applied: [(path: String, backup: Data)] = []
+        do {
+            for item in staged {
+                let result = laramgr.shared.lara_overwritefile(target: item.target, data: item.data)
+                if !result.ok {
+                    throw "failed to overwrite with replacement file: \(item.target)"
+                }
+                applied.append((item.target, item.backup))
+            }
+        } catch {
+            for item in applied.reversed() {
+                _ = laramgr.shared.lara_overwritefile(target: item.path, data: item.backup)
+            }
+            throw error
         }
     }
     
@@ -148,192 +213,179 @@ class SpringboardColorManager {
     }
     
     static func createColorOLD(forType: SpringboardType, color: CIColor, blur: Int, asTemp: Bool = false) throws {
-        let bgDir = getBackgroundDirectory()
-        
-        if bgDir != nil && finalFiles[forType] != nil && fileFolders[forType] != nil && fileExt[forType] != nil {
-            // get the files
-            let url = Bundle.main.url(forResource: "replacement", withExtension: ".materialrecipe")
-            // set the colors
-            if url != nil {
+        guard let bgDir = getBackgroundDirectory(),
+              let files = finalFiles[forType],
+              let folder = fileFolders[forType],
+              let ext = fileExt[forType] else {
+            throw "Could not find the background files directory!"
+        }
+
+        guard let url = Bundle.main.url(forResource: "replacement", withExtension: ".materialrecipe") else {
+            throw "No replacement materialrecipe resource was found!"
+        }
+
+        do {
+            let plistData = try Data(contentsOf: url)
+            guard var plist = try PropertyListSerialization.propertyList(from: plistData, options: [], format: nil) as? [String: Any] else {
+                throw "Invalid property list format"
+            }
+
+            if var firstLevel = plist["baseMaterial"] as? [String : Any], var secondLevel = firstLevel["tinting"] as? [String: Any], var thirdLevel = secondLevel["tintColor"] as? [String: Any] {
+                thirdLevel["red"] = color.red
+                thirdLevel["green"] = color.green
+                thirdLevel["blue"] = color.blue
+                thirdLevel["alpha"] = 1
+
+                if var secondLevel2 = firstLevel["materialFiltering"] as? [String: Any] {
+                    secondLevel2["blurRadius"] = blur
+                    firstLevel["materialFiltering"] = secondLevel2
+                }
+
+                secondLevel["tintColor"] = thirdLevel
+                secondLevel["tintAlpha"] = color.alpha*(getAlphaMultiplier(forType: forType))
+                firstLevel["tinting"] = secondLevel
+                plist["baseMaterial"] = firstLevel
+            }
+
+            if forType == .module {
+                let styles: [String: String] = [
+                    "fill": "moduleFill",
+                    "stroke": "moduleStroke"
+                ]
+                plist["styles"] = styles
+                plist["materialSettingsVersion"] = 2
+            }
+
+            for file in files {
+                let path: String = "\(folder)\(file)\(ext)"
+                let newUrl = URL(fileURLWithPath: path)
                 do {
-                    let plistData = try Data(contentsOf: url!)
-                    var plist = try PropertyListSerialization.propertyList(from: plistData, options: [], format: nil) as! [String: Any]
-                    
-                    if var firstLevel = plist["baseMaterial"] as? [String : Any], var secondLevel = firstLevel["tinting"] as? [String: Any], var thirdLevel = secondLevel["tintColor"] as? [String: Any] {
-                        // set the colors
-                        thirdLevel["red"] = color.red
-                        thirdLevel["green"] = color.green
-                        thirdLevel["blue"] = color.blue
-                        thirdLevel["alpha"] = 1
-                        
-                        if var secondLevel2 = firstLevel["materialFiltering"] as? [String: Any] {
-                            secondLevel2["blurRadius"] = blur
-                            firstLevel["materialFiltering"] = secondLevel2
-                        }
-                        
-                        secondLevel["tintColor"] = thirdLevel
-                        secondLevel["tintAlpha"] = color.alpha*(getAlphaMultiplier(forType: forType))
-                        firstLevel["tinting"] = secondLevel
-                        plist["baseMaterial"] = firstLevel
+                    let originalFileSize = try Data(contentsOf: newUrl).count
+                    let newData = try addEmptyData(matchingSize: originalFileSize, to: plist)
+                    guard newData.count == originalFileSize else {
+                        throw "Not the correct file size for item \(file+ext)! (\(newData.count) vs \(originalFileSize))"
                     }
-                    
-                    if forType == .module {
-                        let styles: [String: String] = [
-                            "fill": "moduleFill",
-                            "stroke": "moduleStroke"
-                        ]
-                        plist["styles"] = styles
-                        plist["materialSettingsVersion"] = 2
-                    }
-                    
-                    // fill with empty data
-                    for (_, file) in finalFiles[forType]!.enumerated() {
-                        // get original data
-                        let path: String = "\(fileFolders[forType]!)\(file)\(fileExt[forType]!)"
-                        let newUrl = URL(fileURLWithPath: path)
-                        do {
-                            let originalFileSize = try Data(contentsOf: newUrl).count
-                            let newData = try addEmptyData(matchingSize: originalFileSize, to: plist)
-                            // save file to background directory
-                            if newData.count == originalFileSize {
-                                if asTemp {
-                                    try newData.write(to: FileManager.default.temporaryDirectory.appendingPathComponent(file+fileExt[forType]!))
-                                } else {
-                                    try newData.write(to: bgDir!.appendingPathComponent(file+fileExt[forType]!))
-                                }
-                            } else {
-                                print("NOT CORRECT SIZE")
-                            }
-                        } catch {
-                            print(error.localizedDescription)
-                            throw error.localizedDescription
-                        }
-                    }
+                    let destDir = try prepareStagingDirectory(forType: forType, asTemp: asTemp)
+                    try newData.write(to: destDir.appendingPathComponent(file+ext), options: .atomic)
                 } catch {
+                    print(error.localizedDescription)
                     throw error.localizedDescription
                 }
             }
-        } else {
-            throw "Could not find the background files directory!"
+        } catch {
+            throw error.localizedDescription
         }
     }
-    
+
     static func createColor(forType: SpringboardType, color: CIColor, blur: Int, asTemp: Bool = false) throws {
-        let bgDir = getBackgroundDirectory()
-        
-        if bgDir != nil && finalFiles[forType] != nil && fileFolders[forType] != nil && fileExt[forType] != nil {
-            if fileExt[forType] == ".materialrecipe" && forType != .switcher {
-                try createColorOLD(forType: forType, color: color, blur: blur, asTemp: asTemp)
-                return
-            }
-            if forType == .switcher {
-                for file in finalFiles[forType]! {
-                    let path: String = "\(fileFolders[forType]!)\(file)\(fileExt[forType]!)"
-                    let plistData = try Data(contentsOf: URL(fileURLWithPath: path))
-                    var plist = try PropertyListSerialization.propertyList(from: plistData, options: [], format: nil) as! [String: Any]
-                    
-                    if var firstLevel = plist["baseMaterial"] as? [String : Any], var secondLevel = firstLevel["materialFiltering"] as? [String: Any] {
-                        secondLevel["blurRadius"] = blur
-                        firstLevel["materialFiltering"] = secondLevel
-                        plist["baseMaterial"] = firstLevel
-                    }
-                    plist["materialSettingsVersion"] = nil
-                    
-                    let newUrl = URL(fileURLWithPath: path)
-                    do {
-                        let originalFileSize = try Data(contentsOf: newUrl).count
-                        let newData = try addEmptyData(matchingSize: originalFileSize, to: plist)
-                        // save file to background directory
-                        if newData.count == originalFileSize {
-                            if asTemp {
-                                if FileManager.default.fileExists(atPath: FileManager.default.temporaryDirectory.appendingPathComponent(file+fileExt[forType]!).path) {
-                                    try FileManager.default.removeItem(at: FileManager.default.temporaryDirectory.appendingPathComponent(file+fileExt[forType]!))
-                                }
-                                try newData.write(to: FileManager.default.temporaryDirectory.appendingPathComponent(file+fileExt[forType]!))
-                            } else {
-                                if FileManager.default.fileExists(atPath: bgDir!.appendingPathComponent(file+fileExt[forType]!).path) {
-                                    try FileManager.default.removeItem(at: bgDir!.appendingPathComponent(file+fileExt[forType]!))
-                                }
-                                try newData.write(to: bgDir!.appendingPathComponent(file+fileExt[forType]!))
-                            }
-                        } else {
-                            print("NOT CORRECT SIZE")
-                            throw "Not the correct file size for item \(file+fileExt[forType]!)!"
-                        }
-                    } catch {
-                        print(error.localizedDescription)
-                        throw error.localizedDescription
-                    }
-                }
-                return
-            }
-            // get the files
-            for file in finalFiles[forType]! {
-                let url = Bundle.main.url(forResource: file, withExtension: fileExt[forType]!)
-                if url != nil {
-                    //let originPath = fileFolders[forType]! + file + fileExt[forType]!
-                    let newColor: CIColor = CIColor(red: color.red, green: color.green, blue: color.blue, alpha: color.alpha*getAlphaMultiplier(forType: forType))
-                    let newData = try ColorSwapManager.setColor(url: url!, color: newColor, blur: blur)
-                    if asTemp {
-                        if FileManager.default.fileExists(atPath: FileManager.default.temporaryDirectory.appendingPathComponent(file+fileExt[forType]!).path) {
-                            try FileManager.default.removeItem(at: FileManager.default.temporaryDirectory.appendingPathComponent(file+fileExt[forType]!))
-                        }
-                        try newData.write(to: FileManager.default.temporaryDirectory.appendingPathComponent(file+fileExt[forType]!))
-                    } else {
-                        if FileManager.default.fileExists(atPath: bgDir!.appendingPathComponent(file+fileExt[forType]!).path) {
-                            try FileManager.default.removeItem(at: bgDir!.appendingPathComponent(file+fileExt[forType]!))
-                        }
-                        try newData.write(to: bgDir!.appendingPathComponent(file+fileExt[forType]!))
-                    }
-                } else {
-                    throw "Backup url could not be found!"
-                }
-            }
+        guard let bgDir = getBackgroundDirectory(),
+              let files = finalFiles[forType],
+              let folder = fileFolders[forType],
+              let ext = fileExt[forType] else {
+            throw "Could not find the background files directory!"
+        }
+
+        if ext == ".materialrecipe" && forType != .switcher {
+            try createColorOLD(forType: forType, color: color, blur: blur, asTemp: asTemp)
             return
-        } else {
-            throw "Could not find the background files directory!"
         }
-    }
-    
-    static func deteleColor(forType: SpringboardType) throws {
-        let bgDir = getBackgroundDirectory()
-        if bgDir != nil {
-            for (_, file) in finalFiles[forType]!.enumerated() {
-                let path: URL = bgDir!.appendingPathComponent(file+fileExt[forType]!)
-                try FileManager.default.removeItem(at: path)
-            }
-        } else {
-            throw "Could not find the background files directory!"
-        }
-    }
-    
-    static func applyColor(forType: SpringboardType, asTemp: Bool = false) {
-        let bgDir = getBackgroundDirectory()
-        
-        if bgDir != nil && finalFiles[forType] != nil && fileFolders[forType] != nil && fileExt[forType] != nil {
-            for (_, file) in finalFiles[forType]!.enumerated() {
+        if forType == .switcher {
+            let destDir = try prepareStagingDirectory(forType: forType, asTemp: asTemp)
+            for file in files {
+                let path: String = "\(folder)\(file)\(ext)"
+                let plistData = try Data(contentsOf: URL(fileURLWithPath: path))
+                guard var plist = try PropertyListSerialization.propertyList(from: plistData, options: [], format: nil) as? [String: Any] else {
+                    throw "Invalid property list format"
+                }
+
+                if var firstLevel = plist["baseMaterial"] as? [String : Any], var secondLevel = firstLevel["materialFiltering"] as? [String: Any] {
+                    secondLevel["blurRadius"] = blur
+                    firstLevel["materialFiltering"] = secondLevel
+                    plist["baseMaterial"] = firstLevel
+                }
+                plist["materialSettingsVersion"] = nil
+
+                let newUrl = URL(fileURLWithPath: path)
                 do {
-                    var newData: Data? = nil
-                    if asTemp {
-                        newData = try Data(contentsOf: FileManager.default.temporaryDirectory.appendingPathComponent(file + fileExt[forType]!))
+                    let originalFileSize = try Data(contentsOf: newUrl).count
+                    let newData = try addEmptyData(matchingSize: originalFileSize, to: plist)
+                    if newData.count == originalFileSize {
+                        try newData.write(to: destDir.appendingPathComponent(file+ext), options: .atomic)
                     } else {
-                        newData = try Data(contentsOf: bgDir!.appendingPathComponent(file + fileExt[forType]!))
-                    }
-                    if newData == nil {
-                        throw "No color files found!"
-                    }
-                    // overwrite file
-                    let result = laramgr.shared.lara_overwritefile(target: "\(fileFolders[forType]!)\(file)\(fileExt[forType]!)", data: newData!)
-                    
-                    if result.ok {
-                        throw "successfully reverted files"
-                    } else {
-                        throw "failed to overwrite with replacement file!"
+                        print("NOT CORRECT SIZE")
+                        throw "Not the correct file size for item \(file+ext)!"
                     }
                 } catch {
                     print(error.localizedDescription)
+                    throw error.localizedDescription
                 }
             }
+            return
+        }
+        let destDir = try prepareStagingDirectory(forType: forType, asTemp: asTemp)
+        for file in files {
+            guard let url = Bundle.main.url(forResource: file, withExtension: ext) else {
+                throw "Backup url could not be found!"
+            }
+            let newColor: CIColor = CIColor(red: color.red, green: color.green, blue: color.blue, alpha: color.alpha*getAlphaMultiplier(forType: forType))
+            let newData = try ColorSwapManager.setColor(url: url, color: newColor, blur: blur)
+            try newData.write(to: destDir.appendingPathComponent(file+ext), options: .atomic)
+        }
+    }
+
+    static func deteleColor(forType: SpringboardType) throws {
+        guard let bgDir = getBackgroundDirectory(),
+              let files = finalFiles[forType],
+              let ext = fileExt[forType] else {
+            throw "Could not find the background files directory!"
+        }
+        for file in files {
+            let path = bgDir.appendingPathComponent(file + ext)
+            if FileManager.default.fileExists(atPath: path.path) {
+                try FileManager.default.removeItem(at: path)
+            }
+        }
+    }
+    
+    static func applyColor(forType: SpringboardType, asTemp: Bool = false) throws {
+        guard let bgDir = getBackgroundDirectory(),
+              let files = finalFiles[forType],
+              let folder = fileFolders[forType],
+              let ext = fileExt[forType] else {
+            throw "Could not find the background files directory!"
+        }
+
+        // Stage all replacements first; refuse partial SpringBoard material writes.
+        var staged: [(target: String, data: Data, backup: Data)] = []
+        let sourceDir = try resolveStagingDirectory(forType: forType, asTemp: asTemp)
+        for file in files {
+            let sourceURL = sourceDir.appendingPathComponent(file + ext)
+            let target = "\(folder)\(file)\(ext)"
+            let newData = try Data(contentsOf: sourceURL)
+            guard !newData.isEmpty else {
+                throw "refusing empty replacement for \(file)\(ext)"
+            }
+            let backup = try Data(contentsOf: URL(fileURLWithPath: target))
+            guard !backup.isEmpty else {
+                throw "refusing empty target for \(file)\(ext)"
+            }
+            staged.append((target, newData, backup))
+        }
+
+        var appliedBackups: [(path: String, backup: Data)] = []
+        do {
+            for item in staged {
+                let result = laramgr.shared.lara_overwritefile(target: item.target, data: item.data)
+                guard result.ok else {
+                    throw "\(item.target): \(result.message)"
+                }
+                appliedBackups.append((item.target, item.backup))
+            }
+        } catch {
+            for item in appliedBackups.reversed() {
+                _ = laramgr.shared.lara_overwritefile(target: item.path, data: item.backup)
+            }
+            throw error
         }
     }
     
@@ -466,6 +518,9 @@ func addEmptyData(matchingSize: Int, to plist: [String: Any]) throws -> Data {
         }
     }
 
+    guard newData.count == matchingSize else {
+        throw "Unable to pad plist to exact size (\(newData.count) vs \(matchingSize))"
+    }
     return newData
 }
 

@@ -17,36 +17,47 @@ struct carcolorentry {
 }
 
 enum carparser {
-    static func tou32be(_ data: Data, _ off: Int) -> UInt32 {
-        (UInt32(data[off]) << 24) |
-        (UInt32(data[off + 1]) << 16) |
-        (UInt32(data[off + 2]) << 8) |
-        UInt32(data[off + 3])
+    static func require(_ data: Data, _ off: Int, _ size: Int) throws {
+        guard off >= 0, size + size <= data.count else {
+            throw NSError(domain: "CAR", code: 10, userInfo: [NSLocalizedDescriptionKey: "truncated .car (off=\(off) size=\(size) len=\(data.count))"])
+        }
     }
 
-    static func tou16be(_ data: Data, _ off: Int) -> UInt16 {
-        (UInt16(data[off]) << 8) |
-        UInt16(data[off + 1])
+    static func tou32be(_ data: Data, _ off: Int) throws -> UInt32 {
+        try require(data, off, 4)
+        return (UInt32(data[off]) << 24) |
+            (UInt32(data[off + 1]) << 16) |
+            (UInt32(data[off + 2]) << 8) |
+            UInt32(data[off + 3])
+    }
+
+    static func tou16be(_ data: Data, _ off: Int) throws -> UInt16 {
+        try require(data, off, 2)
+        return (UInt16(data[off]) << 8) |
+            UInt16(data[off + 1])
     }
 
     static func parse(_ data: Data) throws -> [carcolorentry] {
+        try require(data, 0, 8)
         let magic = String(bytes: data[0..<8], encoding: .ascii)
         guard magic == "BOMStore" else {
             throw NSError(domain: "CAR", code: 1, userInfo: [NSLocalizedDescriptionKey: "invalid file"])
         }
 
-        let idxoff = Int(tou32be(data, 0x10))
-        let varoff = Int(tou32be(data, 0x18))
+        let idxoff = Int(try tou32be(data, 0x10))
+        let varoff = Int(try tou32be(data, 0x18))
 
-        let varcount = Int(tou32be(data, varoff))
+        let varcount = Int(try tou32be(data, varoff))
         var p = varoff + 4
 
         var blocks: [String: Int] = [:]
 
         for _ in 0..<varcount {
-            let id = Int(tou32be(data, p)); p += 4
+            let id = Int(try tou32be(data, p)); p += 4
+            try require(data, p, 1)
             let len = Int(data[p]); p += 1
 
+            try require(data, p, len)
             let name = String(bytes: data[p..<p+len], encoding: .ascii) ?? ""
             p += len
 
@@ -57,25 +68,28 @@ enum carparser {
             throw NSError(domain: "CAR", code: 2)
         }
 
-        let nptr = Int(tou32be(data, idxoff))
+        let nptr = Int(try tou32be(data, idxoff))
         var ptrs: [(Int, Int)] = []
 
         for i in 0..<nptr {
-            let off = Int(tou32be(data, idxoff + 4 + i*8))
-            let len = Int(tou32be(data, idxoff + 4 + i*8 + 4))
+            let off = Int(try tou32be(data, idxoff + 4 + i*8))
+            let len = Int(try tou32be(data, idxoff + 4 + i*8 + 4))
             ptrs.append((off, len))
         }
 
+        guard colorsblock >= 0, colorsblock < ptrs.count else { throw NSError(domain: "CAR", code: 5) }
         let root = ptrs[colorsblock]
 
+        try require(data, root.0, 4)
         let treemagic = String(bytes: data[root.0..<root.0+4], encoding: .ascii)
         guard treemagic == "tree" else { throw NSError(domain: "CAR", code: 3) }
 
-        let childid = Int(tou32be(data, root.0 + 8))
+        let childid = Int(try tou32be(data, root.0 + 8))
+        guard childid >= 0, childid < ptrs.count else { throw NSError(domain: "CAR", code: 6) }
         let child = ptrs[childid]
 
-        let isleaf = tou16be(data, child.0)
-        let count = Int(tou16be(data, child.0 + 2))
+        let isleaf = try tou16be(data, child.0)
+        let count = Int(try tou16be(data, child.0 + 2))
 
         guard isleaf != 0 else { throw NSError(domain: "CAR", code: 4) }
 
@@ -84,11 +98,15 @@ enum carparser {
         for i in 0..<count {
             let eOff = child.0 + 12 + i*8
 
-            let valblk = Int(tou32be(data, eOff))
-            let keyblk = Int(tou32be(data, eOff + 4))
+            let valblk = Int(try tou32be(data, eOff))
+            let keyblk = Int(try tou32be(data, eOff + 4))
+            guard keyblk >= 0, keyblk < ptrs.count, valblk >= 0, valblk < ptrs.count else {
+                throw NSError(domain: "CAR", code: 7)
+            }
 
             let key = ptrs[keyblk]
             let val = ptrs[valblk]
+            try require(data, key.0, key.1)
 
             var s = key.0
             let end = key.0 + key.1
@@ -101,6 +119,7 @@ enum carparser {
             let name = String(bytes: data[s..<e], encoding: .ascii) ?? "?"
 
             let cOff = val.0 + 8
+            try require(data, cOff, 4)
 
             let b = data[cOff]
             let g = data[cOff+1]
@@ -294,13 +313,18 @@ struct SystemColor: View {
         }
 
         for e in parsedentries {
+            guard e.coloroff >= 0, e.coloroff + 3 < original.count else {
+                status = "Invalid color offset"
+                return
+            }
             original[e.coloroff]     = e.b
             original[e.coloroff + 1] = e.g
             original[e.coloroff + 2] = e.r
             original[e.coloroff + 3] = e.a
         }
 
-        let tmp = NSTemporaryDirectory() + "patched.car"
+        let tmp = (NSTemporaryDirectory() as NSString).appendingPathComponent("patched-\(UUID().uuidString).car")
+        defer { try? FileManager.default.removeItem(atPath: tmp) }
         do {
             try original.write(to: URL(fileURLWithPath: tmp))
         } catch {
@@ -310,8 +334,6 @@ struct SystemColor: View {
 
         let res = mgr.lara_overwritefile(target: syspath, source: tmp)
         status = res.ok ? "Patched!" : "Failed: \(res.message)"
-
-        try? FileManager.default.removeItem(atPath: tmp)
     }
     
     func clamptouint8(_ value: CGFloat) -> UInt8 {

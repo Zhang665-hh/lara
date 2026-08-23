@@ -88,7 +88,7 @@ struct ScreenTimeView: View {
             }
         }
         .navigationTitle("Screen Time")
-        .alert("Result", isPresented: .constant(lastResult != nil)) {
+        .alert("Result", isPresented: Binding(get: { lastResult != nil }, set: { if !$0 { lastResult = nil } })) {
             Button("OK") { lastResult = nil }
         } message: {
             Text(lastResult ?? "")
@@ -102,7 +102,17 @@ struct ScreenTimeView: View {
         let homed = killHomed
         let family = killFamilycircled
         DispatchQueue.global(qos: .userInitiated).async {
-            let ok = screentime_disable(agent, usage, homed, family)
+            var ok = false
+            let locked = self.mgr.withRCRunning {
+                ok = screentime_disable(agent, usage, homed, family)
+            }
+            if !locked {
+                DispatchQueue.main.async {
+                    self.isWorking = false
+                    self.lastResult = "RemoteCall session busy"
+                }
+                return
+            }
             DispatchQueue.main.async {
                 isWorking = false
                 if ok {
@@ -118,7 +128,17 @@ struct ScreenTimeView: View {
     private func applyEnable() {
         isWorking = true
         DispatchQueue.global(qos: .userInitiated).async {
-            let ok = screentime_enable()
+            var ok = false
+            let locked = self.mgr.withRCRunning {
+                ok = screentime_enable()
+            }
+            if !locked {
+                DispatchQueue.main.async {
+                    self.isWorking = false
+                    self.lastResult = "RemoteCall session busy"
+                }
+                return
+            }
             DispatchQueue.main.async {
                 isWorking = false
                 if ok {
